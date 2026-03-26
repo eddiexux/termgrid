@@ -1,11 +1,16 @@
 # termgrid
 
+[![Crates.io](https://img.shields.io/crates/v/termgrid.svg)](https://crates.io/crates/termgrid)
+[![CI](https://github.com/eddiexux/termgrid/actions/workflows/ci.yml/badge.svg)](https://github.com/eddiexux/termgrid/actions)
+[![License](https://img.shields.io/crates/l/termgrid.svg)](LICENSE-MIT)
+
 A terminal multiplexer with Git context awareness, built in Rust.
 
 Manage multiple terminal sessions in a single dashboard. Each tile automatically detects Git project, branch, and worktree — letting you see at a glance what's running where.
 
-<!-- TODO: Add screenshot/GIF here -->
-<!-- ![termgrid demo](docs/demo.gif) -->
+[中文文档](README_CN.md)
+
+![termgrid screenshot](docs/ScreenShot_2026-03-26_144613_171.png)
 
 ## Features
 
@@ -15,7 +20,7 @@ Manage multiple terminal sessions in a single dashboard. Each tile automatically
 - **Detail panel** — select a tile to see full terminal output with colors
 - **Vim-like modes** — Normal (navigate), Insert (type), Overlay (dialogs)
 - **Session persistence** — auto-save/restore tile layout and scrollback history on restart
-- **Mouse support** — click to select, double-click to enter, scroll to navigate
+- **Mouse support** — click to select tiles, drag to select text (auto-copy to clipboard)
 - **Full terminal emulation** — powered by [vt100](https://crates.io/crates/vt100), supports complex TUI apps
 - **CJK support** — correct wide character rendering
 - **Logging** — debug logs to `~/.local/share/termgrid/termgrid.log`
@@ -75,9 +80,8 @@ termgrid --fresh        # Ignore saved session, start empty
 
 - **Click** tile card to select
 - **Double-click** to enter Insert mode
-- **Click** tab bar to switch project filter
+- **Drag** in detail panel to select text (auto-copies to clipboard on release)
 - **Scroll** to navigate grid
-- **Shift+Click** for native text selection (copy/paste)
 
 ## Configuration
 
