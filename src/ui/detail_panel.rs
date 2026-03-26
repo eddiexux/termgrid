@@ -15,7 +15,12 @@ pub struct DetailRenderResult {
 }
 
 /// Render the detail panel. Returns cursor position and actual terminal area size.
-pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&str>) -> DetailRenderResult {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    tile: &Tile,
+    index_label: Option<&str>,
+) -> DetailRenderResult {
     // Render the outer block with left border as vertical separator
     let block = Block::default()
         .borders(Borders::LEFT)
@@ -26,21 +31,24 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&s
     frame.render_widget(block, area);
 
     if inner.height == 0 || inner.width == 0 {
-        return DetailRenderResult { cursor_pos: None, terminal_size: (0, 0) };
+        return DetailRenderResult {
+            cursor_pos: None,
+            terminal_size: (0, 0),
+        };
     }
 
     // Split: header lines + separator + terminal area
     let header_height = crate::layout::DETAIL_HEADER_HEIGHT;
     if inner.height <= header_height {
-        return DetailRenderResult { cursor_pos: None, terminal_size: (0, 0) };
+        return DetailRenderResult {
+            cursor_pos: None,
+            terminal_size: (0, 0),
+        };
     }
 
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([
-            Constraint::Length(header_height),
-            Constraint::Min(0),
-        ])
+        .constraints([Constraint::Length(header_height), Constraint::Min(0)])
         .split(inner);
 
     let header_area = chunks[0];
@@ -73,7 +81,7 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&s
     let mut cursor_pos = None;
     if terminal_area.height > 0 {
         let rows = terminal_area.height as usize;
-        let cols = terminal_area.width as u16;
+        let cols = terminal_area.width;
         let screen = &tile.vte;
         let (cursor_row, cursor_col) = screen.cursor_position();
 
@@ -109,10 +117,7 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&s
         if cursor_row as usize >= start_row {
             let screen_row = (cursor_row as usize - start_row) as u16;
             if screen_row < terminal_area.height && cursor_col < terminal_area.width {
-                cursor_pos = Some((
-                    terminal_area.x + cursor_col,
-                    terminal_area.y + screen_row,
-                ));
+                cursor_pos = Some((terminal_area.x + cursor_col, terminal_area.y + screen_row));
             }
         }
     }

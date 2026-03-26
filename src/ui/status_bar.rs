@@ -7,13 +7,7 @@ use ratatui::{
     Frame,
 };
 
-pub fn render(
-    frame: &mut Frame,
-    area: Rect,
-    mode: &AppMode,
-    session_count: usize,
-    columns: u8,
-) {
+pub fn render(frame: &mut Frame, area: Rect, mode: &AppMode, session_count: usize, columns: u8) {
     let mut spans = Vec::new();
 
     // Mode tag

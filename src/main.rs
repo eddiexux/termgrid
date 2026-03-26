@@ -6,7 +6,10 @@ use termgrid::config::Config;
 use termgrid::session::Session;
 
 #[derive(Parser, Debug)]
-#[command(name = "termgrid", about = "Multi-terminal manager with Git context awareness")]
+#[command(
+    name = "termgrid",
+    about = "Multi-terminal manager with Git context awareness"
+)]
 struct Cli {
     /// Directory to scan for projects
     #[arg()]

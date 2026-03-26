@@ -82,14 +82,10 @@ impl App {
         tracing::info!("Spawning tile {} in {:?}", id.0, cwd);
         // Use actual terminal dimensions for PTY size
         let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        let (pty_cols, pty_rows) = Self::estimate_pty_size(term_cols, term_rows, self.config.layout.detail_panel_width);
-        let (tile, reader) = crate::tile::Tile::spawn(
-            id,
-            &self.config.terminal.shell,
-            cwd,
-            pty_cols,
-            pty_rows,
-        )?;
+        let (pty_cols, pty_rows) =
+            Self::estimate_pty_size(term_cols, term_rows, self.config.layout.detail_panel_width);
+        let (tile, reader) =
+            crate::tile::Tile::spawn(id, &self.config.terminal.shell, cwd, pty_cols, pty_rows)?;
         self.tile_manager.add(tile);
 
         // Spawn async reader task
@@ -115,8 +111,7 @@ impl App {
         // Spawn tick timer
         let tx_tick = self.event_tx.clone();
         tokio::spawn(async move {
-            let mut interval =
-                tokio::time::interval(Duration::from_millis(500));
+            let mut interval = tokio::time::interval(Duration::from_millis(500));
             loop {
                 interval.tick().await;
                 if tx_tick.send(AppEvent::Tick).await.is_err() {
@@ -134,7 +129,8 @@ impl App {
             let detail_width = self.config.layout.detail_panel_width;
             let filtered_count = self.tile_manager.filtered_tiles(&self.active_tab).len();
 
-            let filtered_ids: Vec<TileId> = self.tile_manager
+            let filtered_ids: Vec<TileId> = self
+                .tile_manager
                 .filtered_tiles(&self.active_tab)
                 .iter()
                 .map(|t| t.id)
@@ -192,7 +188,9 @@ impl App {
             // Drain remaining queued events
             while let Ok(event) = self.event_rx.try_recv() {
                 self.handle_event(event);
-                if self.should_quit { break; }
+                if self.should_quit {
+                    break;
+                }
             }
 
             if self.should_quit {
@@ -225,9 +223,18 @@ impl App {
                 if self.mode == AppMode::Normal {
                     use crossterm::event::KeyCode;
                     match key.code {
-                        KeyCode::Char('1') => { self.columns = 1; return; }
-                        KeyCode::Char('2') => { self.columns = 2; return; }
-                        KeyCode::Char('3') => { self.columns = 3; return; }
+                        KeyCode::Char('1') => {
+                            self.columns = 1;
+                            return;
+                        }
+                        KeyCode::Char('2') => {
+                            self.columns = 2;
+                            return;
+                        }
+                        KeyCode::Char('3') => {
+                            self.columns = 3;
+                            return;
+                        }
                         KeyCode::Char('n') => {
                             // Create tile in current directory (skip project selector for MVP)
                             let cwd = std::env::current_dir().unwrap_or_default();
@@ -284,7 +291,9 @@ impl App {
             AppEvent::Tick => {
                 self.poll_tile_states();
                 // Auto-remove any tiles whose PTY has exited (fallback for cases not caught by PtyExited)
-                let exited: Vec<TileId> = self.tile_manager.tiles()
+                let exited: Vec<TileId> = self
+                    .tile_manager
+                    .tiles()
                     .iter()
                     .filter(|t| matches!(t.status, crate::tile::TileStatus::Exited))
                     .map(|t| t.id)
@@ -316,7 +325,8 @@ impl App {
                 let now = std::time::Instant::now();
 
                 // Detect double-click: same position within 400ms
-                let is_double_click = self.last_click
+                let is_double_click = self
+                    .last_click
                     .map(|(t, lx, ly)| {
                         now.duration_since(t).as_millis() < 400 && lx == x && ly == y
                     })
@@ -333,8 +343,10 @@ impl App {
 
                 // Click on a tile card?
                 for (i, rect) in layout.tile_rects.iter().enumerate() {
-                    if x >= rect.x && x < rect.x + rect.width
-                        && y >= rect.y && y < rect.y + rect.height
+                    if x >= rect.x
+                        && x < rect.x + rect.width
+                        && y >= rect.y
+                        && y < rect.y + rect.height
                     {
                         if let Some(&tile_id) = self.last_filtered_ids.get(i) {
                             self.tile_manager.select(tile_id);
@@ -387,12 +399,7 @@ impl App {
         #[cfg(target_os = "macos")]
         {
             use crate::process::get_process_cwd;
-            let tile_ids: Vec<TileId> = self
-                .tile_manager
-                .tiles()
-                .iter()
-                .map(|t| t.id)
-                .collect();
+            let tile_ids: Vec<TileId> = self.tile_manager.tiles().iter().map(|t| t.id).collect();
 
             for id in tile_ids {
                 if let Some(tile) = self.tile_manager.get(id) {
@@ -411,12 +418,7 @@ impl App {
         }
 
         // Update tile statuses
-        let tile_ids: Vec<TileId> = self
-            .tile_manager
-            .tiles()
-            .iter()
-            .map(|t| t.id)
-            .collect();
+        let tile_ids: Vec<TileId> = self.tile_manager.tiles().iter().map(|t| t.id).collect();
 
         for id in tile_ids {
             #[cfg(unix)]
@@ -457,8 +459,12 @@ impl App {
             tile.vte.process(data);
             // Ensure cursor is visible and at a sane position after restore.
             // The restored content may have left cursor hidden or at an old position.
-            tile.vte.process(b"\x1b[?25h");  // show cursor
-            tracing::debug!("Restored {} bytes scrollback for tile {}", data.len(), tile_id.0);
+            tile.vte.process(b"\x1b[?25h"); // show cursor
+            tracing::debug!(
+                "Restored {} bytes scrollback for tile {}",
+                data.len(),
+                tile_id.0
+            );
         }
     }
 
@@ -473,9 +479,15 @@ impl App {
     /// Estimate PTY dimensions before first render (when detail panel rect is unknown).
     fn estimate_pty_size(term_cols: u16, term_rows: u16, detail_width_pct: u16) -> (u16, u16) {
         let detail_width = ((term_cols as u32 * detail_width_pct as u32) / 100) as u16;
-        let cols = detail_width.saturating_sub(crate::layout::DETAIL_BORDER_WIDTH).max(10);
+        let cols = detail_width
+            .saturating_sub(crate::layout::DETAIL_BORDER_WIDTH)
+            .max(10);
         let rows = term_rows
-            .saturating_sub(crate::layout::TAB_BAR_HEIGHT + crate::layout::STATUS_BAR_HEIGHT + crate::layout::DETAIL_HEADER_HEIGHT)
+            .saturating_sub(
+                crate::layout::TAB_BAR_HEIGHT
+                    + crate::layout::STATUS_BAR_HEIGHT
+                    + crate::layout::DETAIL_HEADER_HEIGHT,
+            )
             .max(5);
         (cols, rows)
     }

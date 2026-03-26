@@ -90,8 +90,14 @@ mod tests {
 
         let session = Session {
             tiles: vec![
-                TileSession { cwd: PathBuf::from("/tmp"), scrollback_index: None },
-                TileSession { cwd: PathBuf::from("/home/user"), scrollback_index: Some(0) },
+                TileSession {
+                    cwd: PathBuf::from("/tmp"),
+                    scrollback_index: None,
+                },
+                TileSession {
+                    cwd: PathBuf::from("/home/user"),
+                    scrollback_index: Some(0),
+                },
             ],
             columns: 2,
             active_tab: "ALL".into(),

@@ -20,7 +20,9 @@ pub fn handle_key(
     columns: u8,
 ) -> InputResult {
     match mode.clone() {
-        AppMode::Normal => handle_normal_key(key, mode, tile_manager, active_tab, tab_entries, columns),
+        AppMode::Normal => {
+            handle_normal_key(key, mode, tile_manager, active_tab, tab_entries, columns)
+        }
         AppMode::Insert => handle_insert_key(key, mode, tile_manager),
         AppMode::Overlay(ref kind) => handle_overlay_key(key, mode, tile_manager, kind.clone()),
     }
@@ -177,7 +179,6 @@ pub fn key_event_to_bytes(key: &KeyEvent) -> Vec<u8> {
         _ => vec![],
     }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -42,25 +42,32 @@ pub fn render(
     // Only add labels when there are duplicates (e.g. "[1]", "[2]").
     let mut project_counts: HashMap<String, usize> = HashMap::new();
     for tile in &filtered {
-        let key = tile.git_context.as_ref()
+        let key = tile
+            .git_context
+            .as_ref()
             .map(|g| g.project_name.clone())
             .unwrap_or_else(|| tile.cwd.display().to_string());
         *project_counts.entry(key).or_default() += 1;
     }
     let mut project_indices: HashMap<String, usize> = HashMap::new();
-    let index_labels: Vec<Option<String>> = filtered.iter().map(|tile| {
-        let key = tile.git_context.as_ref()
-            .map(|g| g.project_name.clone())
-            .unwrap_or_else(|| tile.cwd.display().to_string());
-        let count = project_counts.get(&key).copied().unwrap_or(1);
-        if count > 1 {
-            let idx = project_indices.entry(key).or_insert(0);
-            *idx += 1;
-            Some(format!("[{}]", *idx))
-        } else {
-            None
-        }
-    }).collect();
+    let index_labels: Vec<Option<String>> = filtered
+        .iter()
+        .map(|tile| {
+            let key = tile
+                .git_context
+                .as_ref()
+                .map(|g| g.project_name.clone())
+                .unwrap_or_else(|| tile.cwd.display().to_string());
+            let count = project_counts.get(&key).copied().unwrap_or(1);
+            if count > 1 {
+                let idx = project_indices.entry(key).or_insert(0);
+                *idx += 1;
+                Some(format!("[{}]", *idx))
+            } else {
+                None
+            }
+        })
+        .collect();
 
     // Render tile cards, collect cursor from selected tile's card
     let mut tile_card_cursor = None;
@@ -80,7 +87,9 @@ pub fn render(
     let mut detail_terminal_size = None;
     if let (Some(detail_area), Some(tile)) = (layout.detail_panel, tile_manager.selected()) {
         let selected_label = selected_id.and_then(|sid| {
-            filtered.iter().position(|t| t.id == sid)
+            filtered
+                .iter()
+                .position(|t| t.id == sid)
                 .and_then(|i| index_labels.get(i))
                 .and_then(|l| l.as_deref())
         });
@@ -118,5 +127,7 @@ pub fn render(
         }
     }
 
-    RenderResult { detail_terminal_size }
+    RenderResult {
+        detail_terminal_size,
+    }
 }

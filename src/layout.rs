@@ -63,50 +63,45 @@ pub fn calculate_layout(
     };
 
     // Middle area between tab bar and status bar
-    let middle_height = total.height.saturating_sub(TAB_BAR_HEIGHT + STATUS_BAR_HEIGHT).max(1);
+    let middle_height = total
+        .height
+        .saturating_sub(TAB_BAR_HEIGHT + STATUS_BAR_HEIGHT)
+        .max(1);
     let middle_y = total.y + TAB_BAR_HEIGHT;
 
     // Determine grid and detail panel layout
-    let (grid_area, detail_panel) = if has_selection
-        && total.width > 40
-        && detail_width_pct > 0
-        && detail_width_pct < 100
-    {
-        let detail_width = ((total.width * detail_width_pct) / 100).max(1);
-        let grid_width = total.width.saturating_sub(detail_width);
+    let (grid_area, detail_panel) =
+        if has_selection && total.width > 40 && detail_width_pct > 0 && detail_width_pct < 100 {
+            let detail_width = ((total.width * detail_width_pct) / 100).max(1);
+            let grid_width = total.width.saturating_sub(detail_width);
 
-        let grid = Rect {
-            x: total.x,
-            y: middle_y,
-            width: grid_width,
-            height: middle_height,
-        };
+            let grid = Rect {
+                x: total.x,
+                y: middle_y,
+                width: grid_width,
+                height: middle_height,
+            };
 
-        let detail = Rect {
-            x: total.x + grid_width,
-            y: middle_y,
-            width: detail_width,
-            height: middle_height,
-        };
+            let detail = Rect {
+                x: total.x + grid_width,
+                y: middle_y,
+                width: detail_width,
+                height: middle_height,
+            };
 
-        (grid, Some(detail))
-    } else {
-        let grid = Rect {
-            x: total.x,
-            y: middle_y,
-            width: total.width,
-            height: middle_height,
+            (grid, Some(detail))
+        } else {
+            let grid = Rect {
+                x: total.x,
+                y: middle_y,
+                width: total.width,
+                height: middle_height,
+            };
+            (grid, None)
         };
-        (grid, None)
-    };
 
     // Calculate tile rects
-    let tile_rects = calculate_tile_rects(
-        grid_area,
-        columns as usize,
-        tile_count,
-        scroll_offset,
-    );
+    let tile_rects = calculate_tile_rects(grid_area, columns as usize, tile_count, scroll_offset);
 
     LayoutResult {
         tab_bar,
@@ -132,8 +127,7 @@ fn calculate_tile_rects(
     let col_width = grid.width / cols as u16;
 
     let total_rows = total_grid_rows(tile_count, cols as u8);
-    let tile_height = (grid.height / total_rows as u16)
-        .clamp(MIN_TILE_HEIGHT, MAX_TILE_HEIGHT);
+    let tile_height = (grid.height / total_rows as u16).clamp(MIN_TILE_HEIGHT, MAX_TILE_HEIGHT);
 
     let mut tile_rects = vec![];
 
@@ -394,7 +388,11 @@ mod tests {
         let result = calculate_layout(total, 2, 4, false, 45, 0);
 
         for tile in &result.tile_rects {
-            assert!(tile.height >= 5, "Tile height {} should be at least 5", tile.height);
+            assert!(
+                tile.height >= 5,
+                "Tile height {} should be at least 5",
+                tile.height
+            );
         }
     }
 }

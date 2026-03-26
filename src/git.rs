@@ -57,7 +57,12 @@ pub fn detect_git(path: &Path) -> Option<GitContext> {
         worktree_name,
         repo_root,
     };
-    tracing::debug!("Git detect at {:?}: project={}, branch={:?}", path, ctx.project_name, ctx.branch);
+    tracing::debug!(
+        "Git detect at {:?}: project={}, branch={:?}",
+        path,
+        ctx.project_name,
+        ctx.branch
+    );
     Some(ctx)
 }
 

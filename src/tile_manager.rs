@@ -96,7 +96,8 @@ impl TileManager {
     /// Within a project group, tiles are ordered by creation order (tile ID).
     /// Non-git tiles are placed after all project tiles.
     pub fn filtered_tiles(&self, filter: &TabFilter) -> Vec<&Tile> {
-        let mut filtered: Vec<&Tile> = self.tiles
+        let mut filtered: Vec<&Tile> = self
+            .tiles
             .iter()
             .filter(|t| filter.matches(&t.git_context))
             .collect();
@@ -109,7 +110,8 @@ impl TileManager {
     }
 
     fn group_key(tile: &Tile) -> String {
-        tile.git_context.as_ref()
+        tile.git_context
+            .as_ref()
             .map(|g| format!("0:{}", g.project_name))
             .unwrap_or_else(|| format!("1:{}", tile.cwd.display()))
     }
@@ -128,11 +130,7 @@ impl TileManager {
 
     /// Select the next tile in the filtered list, cycling around.
     pub fn select_next(&mut self, filter: &TabFilter) {
-        let filtered: Vec<TileId> = self
-            .filtered_tiles(filter)
-            .iter()
-            .map(|t| t.id)
-            .collect();
+        let filtered: Vec<TileId> = self.filtered_tiles(filter).iter().map(|t| t.id).collect();
 
         if filtered.is_empty() {
             return;
@@ -153,11 +151,7 @@ impl TileManager {
 
     /// Select the previous tile in the filtered list, cycling around.
     pub fn select_prev(&mut self, filter: &TabFilter) {
-        let filtered: Vec<TileId> = self
-            .filtered_tiles(filter)
-            .iter()
-            .map(|t| t.id)
-            .collect();
+        let filtered: Vec<TileId> = self.filtered_tiles(filter).iter().map(|t| t.id).collect();
 
         if filtered.is_empty() {
             return;
@@ -185,11 +179,7 @@ impl TileManager {
             return;
         }
 
-        let filtered: Vec<TileId> = self
-            .filtered_tiles(filter)
-            .iter()
-            .map(|t| t.id)
-            .collect();
+        let filtered: Vec<TileId> = self.filtered_tiles(filter).iter().map(|t| t.id).collect();
 
         if filtered.is_empty() {
             return;

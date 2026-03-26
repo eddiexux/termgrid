@@ -36,9 +36,10 @@ fn render_help(frame: &mut Frame, area: Rect) {
     frame.render_widget(block, popup);
 
     let help_text = vec![
-        Line::from(vec![
-            Span::styled("  Navigation", Style::default().add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "  Navigation",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         Line::from(vec![
             Span::styled("  h/j/k/l  ", Style::default().fg(Color::Cyan)),
@@ -53,9 +54,10 @@ fn render_help(frame: &mut Frame, area: Rect) {
             Span::raw("Previous tab"),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  Actions", Style::default().add_modifier(Modifier::BOLD)),
-        ]),
+        Line::from(vec![Span::styled(
+            "  Actions",
+            Style::default().add_modifier(Modifier::BOLD),
+        )]),
         Line::from(""),
         Line::from(vec![
             Span::styled("  Enter    ", Style::default().fg(Color::Cyan)),

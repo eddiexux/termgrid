@@ -57,8 +57,7 @@ impl Default for ScanConfig {
 
 impl Default for TerminalConfig {
     fn default() -> Self {
-        let shell = std::env::var("SHELL")
-            .unwrap_or_else(|_| "/bin/zsh".to_string());
+        let shell = std::env::var("SHELL").unwrap_or_else(|_| "/bin/zsh".to_string());
         Self {
             shell,
             cwd_poll_interval: 2,
@@ -86,10 +85,7 @@ impl Config {
     /// Loads config from a file, returns default config if file doesn't exist or parse fails.
     pub fn load(path: &Path) -> Self {
         match std::fs::read_to_string(path) {
-            Ok(content) => {
-                toml::from_str(&content)
-                    .unwrap_or_else(|_| Config::default())
-            }
+            Ok(content) => toml::from_str(&content).unwrap_or_else(|_| Config::default()),
             Err(_) => Config::default(),
         }
     }

@@ -123,9 +123,7 @@ impl VteState {
         let (cursor_row, _) = screen.cursor_position();
         let total = total_rows as usize;
 
-        let start_row = if total <= max_rows {
-            0
-        } else if (cursor_row as usize) < max_rows {
+        let start_row = if total <= max_rows || (cursor_row as usize) < max_rows {
             0
         } else {
             (cursor_row as usize + 1).saturating_sub(max_rows)
@@ -170,7 +168,13 @@ fn convert_cell(vt_cell: &vt100::Cell) -> Cell {
     if vt_cell.inverse() {
         modifiers |= Modifier::REVERSED;
     }
-    Cell { ch, fg, bg, modifiers, is_wide_continuation: false }
+    Cell {
+        ch,
+        fg,
+        bg,
+        modifiers,
+        is_wide_continuation: false,
+    }
 }
 
 /// Convert vt100::Color to ratatui::style::Color.
@@ -354,7 +358,7 @@ mod tests {
         vte.process(b"\x1b[?1049h"); // enter alt screen
         vte.process(b"alt screen");
         vte.process(b"\x1b[?1049l"); // leave alt screen
-        // After leaving alt screen, content should be back
+                                     // After leaving alt screen, content should be back
         let cell = vte.cell_at(0, 0);
         assert_eq!(cell.ch, 'm'); // 'm' from "main screen"
     }

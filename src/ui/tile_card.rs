@@ -9,7 +9,13 @@ use ratatui::{
 
 /// Render a tile card. Returns cursor screen position if the tile has a visible cursor.
 /// `index_label` is shown when multiple tiles share the same project/directory (e.g. "[2]").
-pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool, index_label: Option<&str>) -> Option<(u16, u16)> {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    tile: &Tile,
+    is_selected: bool,
+    index_label: Option<&str>,
+) -> Option<(u16, u16)> {
     let border_color = if is_selected {
         Color::Cyan
     } else {
@@ -48,7 +54,7 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool, ind
     let mut cursor_pos = None;
     if preview_area.height > 0 {
         let preview_height = preview_area.height as usize;
-        let preview_width = preview_area.width as u16;
+        let preview_width = preview_area.width;
         let screen = &tile.vte;
         let (cursor_row, cursor_col) = screen.cursor_position();
         let total_rows = screen.rows() as usize;
@@ -101,10 +107,7 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool, ind
         if is_selected && cursor_row as usize >= start_row && cursor_col < preview_width {
             let screen_row = (cursor_row as usize - start_row) as u16;
             if screen_row < preview_area.height {
-                cursor_pos = Some((
-                    preview_area.x + cursor_col,
-                    preview_area.y + screen_row,
-                ));
+                cursor_pos = Some((preview_area.x + cursor_col, preview_area.y + screen_row));
             }
         }
     }

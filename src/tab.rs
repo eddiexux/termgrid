@@ -20,9 +20,9 @@ impl TabFilter {
     pub fn matches(&self, git_context: &Option<GitContext>) -> bool {
         match self {
             TabFilter::All => true,
-            TabFilter::Project(name) => {
-                git_context.as_ref().is_some_and(|g| g.project_name == *name)
-            }
+            TabFilter::Project(name) => git_context
+                .as_ref()
+                .is_some_and(|g| g.project_name == *name),
             TabFilter::Other => git_context.is_none(),
         }
     }
@@ -54,11 +54,9 @@ pub fn aggregate_tabs(contexts: &[Option<GitContext>]) -> Vec<TabEntry> {
 
     // Sort projects by count descending, then name ascending
     let mut entries: Vec<(String, usize)> = counts.into_iter().collect();
-    entries.sort_by(|a, b| {
-        match b.1.cmp(&a.1) {
-            std::cmp::Ordering::Equal => a.0.cmp(&b.0),
-            other => other,
-        }
+    entries.sort_by(|a, b| match b.1.cmp(&a.1) {
+        std::cmp::Ordering::Equal => a.0.cmp(&b.0),
+        other => other,
     });
 
     let mut result: Vec<TabEntry> = entries
@@ -167,11 +165,7 @@ pub fn prev_tab(current: &TabFilter, tabs: &[TabEntry]) -> TabFilter {
         }
         TabFilter::Other => {
             // Move to last project if available, else ALL
-            if let Some(last) = tabs
-                .iter()
-                .rev()
-                .find(|t| t.label != "Other")
-            {
+            if let Some(last) = tabs.iter().rev().find(|t| t.label != "Other") {
                 TabFilter::Project(last.label.clone())
             } else {
                 TabFilter::All
