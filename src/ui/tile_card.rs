@@ -40,7 +40,10 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool) -> 
     let title_para = Paragraph::new(title_line);
     frame.render_widget(title_para, title_area);
 
-    // Render screen buffer preview
+    // Render screen buffer preview — show lines around the cursor, not the buffer bottom.
+    // The PTY is sized to the detail panel (e.g. 30 rows), but the small tile only has ~8 rows.
+    // If we take "last 8 lines" we'd get blank rows because the shell prompt is near the top.
+    // Instead, show lines ending at the cursor row so the active content is always visible.
     let mut cursor_pos = None;
     if preview_area.height > 0 {
         let preview_height = preview_area.height as usize;
@@ -48,9 +51,11 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool) -> 
         let screen = &tile.vte.screen;
         let visible = screen.visible_lines();
         let total_visible = visible.len();
-        let start_row = total_visible.saturating_sub(preview_height);
+        let cursor_row = screen.cursor.row.min(total_visible.saturating_sub(1));
+        let end_row = (cursor_row + 1).min(total_visible);
+        let start_row = end_row.saturating_sub(preview_height);
 
-        let text_lines: Vec<Line> = visible[start_row..]
+        let text_lines: Vec<Line> = visible[start_row..end_row]
             .iter()
             .map(|row| {
                 let spans: Vec<Span> = row
