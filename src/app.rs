@@ -76,12 +76,19 @@ impl App {
 
     pub fn spawn_tile(&mut self, cwd: &Path) -> anyhow::Result<TileId> {
         let id = self.tile_manager.next_tile_id();
+        // Use actual terminal dimensions for PTY size
+        let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        // PTY size based on detail panel: ~45% width, minus tab bar and status bar
+        let pty_cols = ((term_cols as u32 * self.config.layout.detail_panel_width as u32) / 100) as u16;
+        let pty_rows = term_rows.saturating_sub(4); // subtract tab bar (2) + status bar (1) + header (3) margin
+        let pty_cols = pty_cols.max(40);
+        let pty_rows = pty_rows.max(10);
         let (tile, reader) = crate::tile::Tile::spawn(
             id,
             &self.config.terminal.shell,
             cwd,
-            80,
-            24,
+            pty_cols,
+            pty_rows,
         )?;
         self.tile_manager.add(tile);
 
@@ -233,8 +240,15 @@ impl App {
             AppEvent::Crossterm(CEvent::Mouse(mouse)) => {
                 self.handle_mouse(mouse);
             }
-            AppEvent::Crossterm(CEvent::Resize(_cols, _rows)) => {
-                // Terminal will re-render on next loop iteration
+            AppEvent::Crossterm(CEvent::Resize(cols, rows)) => {
+                // Resize selected tile's PTY to match new detail panel size
+                let pty_cols = ((cols as u32 * self.config.layout.detail_panel_width as u32) / 100) as u16;
+                let pty_rows = rows.saturating_sub(6);
+                let pty_cols = pty_cols.max(40);
+                let pty_rows = pty_rows.max(10);
+                if let Some(tile) = self.tile_manager.selected_mut() {
+                    let _ = tile.resize(pty_cols, pty_rows);
+                }
             }
             AppEvent::Crossterm(_) => {}
             AppEvent::PtyOutput(tile_id, data) => {

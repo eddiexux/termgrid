@@ -51,6 +51,17 @@ pub struct ScreenBuffer {
     pub current_fg: Color,
     pub current_bg: Color,
     pub current_modifiers: Modifier,
+    /// Alternate screen buffer (for ESC[?1049h/l)
+    alt_grid: Option<Vec<Vec<Cell>>>,
+    alt_cursor: Option<CursorState>,
+    /// Scroll region (top, bottom) — 0-indexed, inclusive
+    scroll_top: usize,
+    scroll_bottom: usize,
+    /// Saved cursor for ESC 7 / ESC 8
+    saved_cursor: Option<CursorState>,
+    saved_fg: Option<Color>,
+    saved_bg: Option<Color>,
+    saved_modifiers: Option<Modifier>,
 }
 
 impl ScreenBuffer {
@@ -67,6 +78,14 @@ impl ScreenBuffer {
             current_fg: Color::Reset,
             current_bg: Color::Reset,
             current_modifiers: Modifier::empty(),
+            alt_grid: None,
+            alt_cursor: None,
+            scroll_top: 0,
+            scroll_bottom: rows.saturating_sub(1),
+            saved_cursor: None,
+            saved_fg: None,
+            saved_bg: None,
+            saved_modifiers: None,
         }
     }
 
@@ -273,6 +292,10 @@ impl ScreenBuffer {
         self.cols = new_cols;
         self.rows = new_rows;
 
+        // Reset scroll region to full screen
+        self.scroll_top = 0;
+        self.scroll_bottom = new_rows.saturating_sub(1);
+
         // Clamp cursor
         self.cursor.row = self.cursor.row.min(new_rows.saturating_sub(1));
         self.cursor.col = self.cursor.col.min(new_cols.saturating_sub(1));
@@ -314,42 +337,173 @@ impl ScreenBuffer {
         self.current_modifiers = Modifier::empty();
     }
 
-    /// Insert n blank lines at the cursor row, pushing existing lines down.
-    /// Lines that fall off the bottom are discarded.
+    /// Insert n blank lines at the cursor row, pushing existing lines down within scroll region.
+    /// Lines that fall off the bottom of the scroll region are discarded.
     pub fn insert_lines(&mut self, n: usize) {
-        let row = self.cursor.row.min(self.rows.saturating_sub(1));
+        let row = self.cursor.row;
+        if row < self.scroll_top || row > self.scroll_bottom {
+            return;
+        }
         for _ in 0..n {
+            if self.scroll_bottom < self.grid.len() {
+                self.grid.remove(self.scroll_bottom);
+            }
             self.grid.insert(row, vec![Cell::default(); self.cols]);
-            if self.grid.len() > self.rows {
-                self.grid.pop();
+        }
+    }
+
+    /// Delete n lines at the cursor row, pulling subsequent lines up within scroll region.
+    /// Blank lines are added at the bottom of the scroll region.
+    pub fn delete_lines(&mut self, n: usize) {
+        let row = self.cursor.row;
+        if row < self.scroll_top || row > self.scroll_bottom {
+            return;
+        }
+        for _ in 0..n {
+            if row < self.grid.len() {
+                self.grid.remove(row);
+                self.grid.insert(self.scroll_bottom, vec![Cell::default(); self.cols]);
             }
         }
     }
 
-    /// Delete n lines at the cursor row, pulling subsequent lines up.
-    /// Blank lines are added at the bottom.
-    pub fn delete_lines(&mut self, n: usize) {
-        let row = self.cursor.row.min(self.rows.saturating_sub(1));
+    /// Switch to alternate screen buffer (ESC[?1049h)
+    pub fn enter_alt_screen(&mut self) {
+        self.save_cursor();
+        let old_grid = std::mem::replace(&mut self.grid, vec![vec![Cell::default(); self.cols]; self.rows]);
+        self.alt_grid = Some(old_grid);
+        self.alt_cursor = Some(self.cursor.clone());
+        self.cursor = CursorState::default();
+    }
+
+    /// Switch back from alternate screen buffer (ESC[?1049l)
+    pub fn leave_alt_screen(&mut self) {
+        if let Some(old_grid) = self.alt_grid.take() {
+            self.grid = old_grid;
+        }
+        if let Some(old_cursor) = self.alt_cursor.take() {
+            self.cursor = old_cursor;
+        }
+        self.restore_cursor();
+    }
+
+    /// Save cursor and style state (ESC 7 / DECSC)
+    pub fn save_cursor(&mut self) {
+        self.saved_cursor = Some(self.cursor.clone());
+        self.saved_fg = Some(self.current_fg);
+        self.saved_bg = Some(self.current_bg);
+        self.saved_modifiers = Some(self.current_modifiers);
+    }
+
+    /// Restore cursor and style state (ESC 8 / DECRC)
+    pub fn restore_cursor(&mut self) {
+        if let Some(c) = self.saved_cursor.take() {
+            self.cursor = c;
+        }
+        if let Some(fg) = self.saved_fg.take() {
+            self.current_fg = fg;
+        }
+        if let Some(bg) = self.saved_bg.take() {
+            self.current_bg = bg;
+        }
+        if let Some(m) = self.saved_modifiers.take() {
+            self.current_modifiers = m;
+        }
+    }
+
+    /// Set scroll region (DECSTBM). top and bottom are 0-indexed.
+    pub fn set_scroll_region(&mut self, top: usize, bottom: usize) {
+        let top = top.min(self.rows.saturating_sub(1));
+        let bottom = bottom.min(self.rows.saturating_sub(1));
+        if top < bottom {
+            self.scroll_top = top;
+            self.scroll_bottom = bottom;
+        }
+        // After setting scroll region, cursor goes to home
+        self.cursor.row = 0;
+        self.cursor.col = 0;
+    }
+
+    /// Scroll up within the scroll region only.
+    pub fn scroll_up_region(&mut self, n: usize) {
         for _ in 0..n {
-            if row < self.grid.len() {
-                self.grid.remove(row);
-                self.grid.push(vec![Cell::default(); self.cols]);
+            if self.scroll_top >= self.scroll_bottom || self.scroll_bottom >= self.rows {
+                break;
+            }
+            let removed = self.grid.remove(self.scroll_top);
+            // Only add to scrollback if scroll region is the full screen
+            if self.scroll_top == 0 && self.scroll_bottom == self.rows - 1 {
+                self.scrollback.push_back(removed);
+                while self.scrollback.len() > self.max_scrollback {
+                    self.scrollback.pop_front();
+                }
+            }
+            self.grid.insert(self.scroll_bottom, vec![Cell::default(); self.cols]);
+        }
+    }
+
+    /// Scroll down within the scroll region.
+    pub fn scroll_down_region(&mut self, n: usize) {
+        for _ in 0..n {
+            if self.scroll_top >= self.scroll_bottom || self.scroll_bottom >= self.rows {
+                break;
+            }
+            self.grid.remove(self.scroll_bottom);
+            self.grid.insert(self.scroll_top, vec![Cell::default(); self.cols]);
+        }
+    }
+
+    /// Erase n characters from cursor position (replace with spaces).
+    pub fn erase_chars(&mut self, n: usize) {
+        let row = self.cursor.row;
+        let col = self.cursor.col;
+        if row < self.rows {
+            for c in col..(col + n).min(self.cols) {
+                self.grid[row][c] = Cell::default();
+            }
+        }
+    }
+
+    /// Insert n blank characters at cursor, shifting existing chars right.
+    pub fn insert_chars(&mut self, n: usize) {
+        let row = self.cursor.row;
+        let col = self.cursor.col;
+        if row < self.rows {
+            for _ in 0..n {
+                if col < self.cols {
+                    self.grid[row].insert(col, Cell::default());
+                    self.grid[row].truncate(self.cols);
+                }
+            }
+        }
+    }
+
+    /// Delete n characters at cursor, shifting remaining chars left.
+    pub fn delete_chars(&mut self, n: usize) {
+        let row = self.cursor.row;
+        let col = self.cursor.col;
+        if row < self.rows {
+            for _ in 0..n {
+                if col < self.grid[row].len() {
+                    self.grid[row].remove(col);
+                    self.grid[row].push(Cell::default());
+                }
             }
         }
     }
 
     // --- Private helpers ---
 
-    /// Move cursor down one row, scrolling the display up if at the bottom.
+    /// Move cursor down one row, scrolling the scroll region up if at the bottom.
     fn advance_row(&mut self) {
         if self.rows == 0 {
             return;
         }
-        if self.cursor.row + 1 >= self.rows {
-            self.scroll_up(1);
-            // cursor stays at the last row
-            self.cursor.row = self.rows - 1;
-        } else {
+        if self.cursor.row == self.scroll_bottom {
+            // At bottom of scroll region → scroll the region up
+            self.scroll_up_region(1);
+            // cursor stays at scroll_bottom
+        } else if self.cursor.row + 1 < self.rows {
             self.cursor.row += 1;
         }
     }
@@ -511,7 +665,7 @@ impl vte::Perform for ScreenBuffer {
     fn csi_dispatch(
         &mut self,
         params: &vte::Params,
-        _intermediates: &[u8],
+        intermediates: &[u8],
         _ignore: bool,
         action: char,
     ) {
@@ -526,11 +680,34 @@ impl vte::Perform for ScreenBuffer {
             if v == 0 { default } else { v }
         };
 
+        // DEC private mode: ESC[?Nh or ESC[?Nl
+        if intermediates == b"?" {
+            let mode = param_list.first().copied().unwrap_or(0);
+            match (action, mode) {
+                ('h', 1049) => self.enter_alt_screen(),
+                ('l', 1049) => self.leave_alt_screen(),
+                ('h', 1) => {} // DECCKM — application cursor keys (ignored for MVP)
+                ('l', 1) => {}
+                ('h', 25) => self.cursor.visible = true,
+                ('l', 25) => self.cursor.visible = false,
+                ('h', 2004) => {} // Bracketed paste mode (ignored)
+                ('l', 2004) => {}
+                ('h', 1000..=1006) => {} // Mouse modes (ignored — termgrid handles mouse)
+                ('l', 1000..=1006) => {}
+                ('h', 7) => {} // Auto-wrap (always on for MVP)
+                ('l', 7) => {}
+                _ => {}
+            }
+            return;
+        }
+
         match action {
             'A' => self.cursor_up(p(0, 1)),
             'B' => self.cursor_down(p(0, 1)),
             'C' => self.cursor_forward(p(0, 1)),
             'D' => self.cursor_back(p(0, 1)),
+            'E' => { self.cursor.col = 0; self.cursor_down(p(0, 1)); }
+            'F' => { self.cursor.col = 0; self.cursor_up(p(0, 1)); }
             'H' | 'f' => {
                 let row = p(0, 1).saturating_sub(1);
                 let col = p(1, 1).saturating_sub(1);
@@ -546,6 +723,22 @@ impl vte::Perform for ScreenBuffer {
             }
             'L' => self.insert_lines(p(0, 1)),
             'M' => self.delete_lines(p(0, 1)),
+            'S' => self.scroll_up_region(p(0, 1)),
+            'T' => self.scroll_down_region(p(0, 1)),
+            'X' => self.erase_chars(p(0, 1)),
+            '@' => self.insert_chars(p(0, 1)),
+            'P' => self.delete_chars(p(0, 1)),
+            'r' => {
+                let top = p(0, 1).saturating_sub(1); // 1-indexed → 0-indexed
+                let bottom = if param_list.len() >= 2 && param_list[1] > 0 {
+                    param_list[1] as usize - 1
+                } else {
+                    self.rows.saturating_sub(1)
+                };
+                self.set_scroll_region(top, bottom);
+            }
+            's' => self.save_cursor(),
+            'u' => self.restore_cursor(),
             'd' => {
                 // VPA: set cursor row (1-indexed)
                 let row = p(0, 1).saturating_sub(1);
@@ -561,7 +754,30 @@ impl vte::Perform for ScreenBuffer {
         }
     }
 
-    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {}
+    fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
+        match (intermediates, byte) {
+            (b"", b'7') => self.save_cursor(),   // DECSC
+            (b"", b'8') => self.restore_cursor(), // DECRC
+            (b"", b'M') => {
+                // Reverse index (RI): scroll down at top of scroll region
+                if self.cursor.row == self.scroll_top {
+                    self.scroll_down_region(1);
+                } else if self.cursor.row > 0 {
+                    self.cursor.row -= 1;
+                }
+            }
+            (b"", b'D') => {
+                // Index (IND): scroll up at bottom of scroll region
+                self.advance_row();
+            }
+            (b"", b'E') => {
+                // Next line (NEL)
+                self.cursor.col = 0;
+                self.advance_row();
+            }
+            _ => {}
+        }
+    }
 
     fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
 }
@@ -960,5 +1176,120 @@ mod vte_tests {
         let row = &vte.screen.visible_lines()[0];
         assert_eq!(row[0].ch, 'A');
         assert_eq!(row[8].ch, 'B');
+    }
+
+    #[test]
+    fn test_alt_screen_switch() {
+        let mut vte = make_vte(10, 5);
+        // Write content on main screen
+        vte.process(b"MainContent");
+        let main_content = vte.screen.visible_lines()[0][0].ch;
+        assert_eq!(main_content, 'M');
+
+        // Enter alternate screen
+        vte.process(b"\x1b[?1049h");
+        // Alternate screen should be blank
+        for cell in &vte.screen.visible_lines()[0] {
+            assert_eq!(cell.ch, ' ');
+        }
+        // Cursor should be at home
+        assert_eq!(vte.screen.cursor.row, 0);
+        assert_eq!(vte.screen.cursor.col, 0);
+
+        // Write content in alternate screen
+        vte.process(b"AltContent");
+        assert_eq!(vte.screen.visible_lines()[0][0].ch, 'A');
+
+        // Leave alternate screen
+        vte.process(b"\x1b[?1049l");
+        // Original content should be restored
+        assert_eq!(vte.screen.visible_lines()[0][0].ch, 'M');
+    }
+
+    #[test]
+    fn test_scroll_region() {
+        let mut buf = ScreenBuffer::new(10, 5);
+        // Write distinct chars in each row
+        for r in 0..5 {
+            buf.grid[r][0].ch = (b'A' + r as u8) as char; // A B C D E
+        }
+
+        // Set scroll region rows 1-3 (0-indexed: top=1, bottom=3)
+        buf.set_scroll_region(1, 3);
+        // Cursor goes to home after set_scroll_region
+        assert_eq!(buf.cursor.row, 0);
+
+        // Scroll up within region: row 1 (B) should be removed, D stays, blank added at row 3
+        buf.scroll_up_region(1);
+        assert_eq!(buf.visible_lines()[0][0].ch, 'A'); // unchanged
+        assert_eq!(buf.visible_lines()[1][0].ch, 'C'); // was row 2
+        assert_eq!(buf.visible_lines()[2][0].ch, 'D'); // was row 3
+        assert_eq!(buf.visible_lines()[3][0].ch, ' '); // blank inserted
+        assert_eq!(buf.visible_lines()[4][0].ch, 'E'); // unchanged
+        // Scrollback should be empty (not full-screen scroll)
+        assert_eq!(buf.scrollback_len(), 0);
+    }
+
+    #[test]
+    fn test_cursor_save_restore() {
+        let mut vte = make_vte(80, 24);
+        // Move cursor to known position
+        vte.process(b"\x1b[5;10H"); // row 4, col 9 (0-indexed)
+        assert_eq!(vte.screen.cursor.row, 4);
+        assert_eq!(vte.screen.cursor.col, 9);
+
+        // Save cursor (ESC 7)
+        vte.process(b"\x1b7");
+        // Move cursor elsewhere
+        vte.process(b"\x1b[1;1H");
+        assert_eq!(vte.screen.cursor.row, 0);
+        assert_eq!(vte.screen.cursor.col, 0);
+
+        // Restore cursor (ESC 8)
+        vte.process(b"\x1b8");
+        assert_eq!(vte.screen.cursor.row, 4);
+        assert_eq!(vte.screen.cursor.col, 9);
+    }
+
+    #[test]
+    fn test_erase_chars() {
+        let mut buf = ScreenBuffer::new(10, 5);
+        for c in 0..10 {
+            buf.grid[0][c].ch = 'X';
+        }
+        buf.cursor.row = 0;
+        buf.cursor.col = 3;
+        buf.erase_chars(4);
+        // Cols 0-2 still 'X', cols 3-6 erased, cols 7-9 still 'X'
+        assert_eq!(buf.visible_lines()[0][2].ch, 'X');
+        assert_eq!(buf.visible_lines()[0][3].ch, ' ');
+        assert_eq!(buf.visible_lines()[0][6].ch, ' ');
+        assert_eq!(buf.visible_lines()[0][7].ch, 'X');
+    }
+
+    #[test]
+    fn test_insert_delete_chars() {
+        let mut buf = ScreenBuffer::new(5, 3);
+        for c in 0..5 {
+            buf.grid[0][c].ch = (b'A' + c as u8) as char; // A B C D E
+        }
+        buf.cursor.row = 0;
+        buf.cursor.col = 1;
+
+        // Insert 1 blank char at col 1 — shifts B C D E right, E falls off
+        buf.insert_chars(1);
+        assert_eq!(buf.visible_lines()[0][0].ch, 'A');
+        assert_eq!(buf.visible_lines()[0][1].ch, ' '); // inserted blank
+        assert_eq!(buf.visible_lines()[0][2].ch, 'B');
+        assert_eq!(buf.visible_lines()[0][3].ch, 'C');
+        assert_eq!(buf.visible_lines()[0][4].ch, 'D'); // E fell off
+
+        // Delete 1 char at col 1 (the blank) — shifts B C D left, blank appended
+        buf.delete_chars(1);
+        assert_eq!(buf.visible_lines()[0][0].ch, 'A');
+        assert_eq!(buf.visible_lines()[0][1].ch, 'B');
+        assert_eq!(buf.visible_lines()[0][2].ch, 'C');
+        assert_eq!(buf.visible_lines()[0][3].ch, 'D');
+        assert_eq!(buf.visible_lines()[0][4].ch, ' '); // blank appended
     }
 }
