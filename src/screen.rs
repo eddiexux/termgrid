@@ -36,9 +36,20 @@ impl VteState {
         }
     }
 
+    /// Whether the alternate screen is currently active.
+    pub fn alternate_screen(&self) -> bool {
+        self.parser.screen().alternate_screen()
+    }
+
     /// Feed raw bytes from PTY into the terminal emulator.
     pub fn process(&mut self, bytes: &[u8]) {
         self.parser.process(bytes);
+    }
+
+    /// Capture the current screen content as ANSI-formatted bytes.
+    /// This can be replayed through a new parser to reconstruct the visual state.
+    pub fn capture_screen(&self) -> Vec<u8> {
+        self.parser.screen().contents_formatted()
     }
 
     /// Get the current screen state.
@@ -154,6 +165,59 @@ impl VteState {
             .collect();
 
         (0, rows)
+    }
+
+    /// Replay raw output history through a temporary tall parser to extract all lines.
+    /// Returns all non-trailing-empty rows as `Vec<Vec<Cell>>`, newest at the end.
+    /// `cols` should match the current terminal width for correct line wrapping.
+    pub fn replay_history(output_history: &[u8], cols: u16) -> Vec<Vec<Cell>> {
+        if output_history.is_empty() {
+            return Vec::new();
+        }
+
+        // Use a tall screen so nothing scrolls off the top.
+        // Estimate: 1 line per ~(cols) bytes, with some headroom.
+        let estimated_lines = (output_history.len() / cols.max(1) as usize + 100).min(100_000);
+        let tall_rows = estimated_lines.max(100) as u16;
+
+        let mut parser = vt100::Parser::new(tall_rows, cols, 0);
+        parser.process(output_history);
+
+        let screen = parser.screen();
+        let total = screen.size().0 as usize;
+
+        // Find the last non-empty row to trim trailing blank rows
+        let mut last_non_empty = 0;
+        for r in (0..total).rev() {
+            let mut has_content = false;
+            for c in 0..cols {
+                if let Some(cell) = screen.cell(r as u16, c) {
+                    if !cell.contents().is_empty() && cell.contents() != " " {
+                        has_content = true;
+                        break;
+                    }
+                }
+            }
+            if has_content {
+                last_non_empty = r;
+                break;
+            }
+        }
+
+        // Also include the row the cursor is on (it might be an empty prompt line)
+        let (cursor_row, _) = screen.cursor_position();
+        let end_row = last_non_empty.max(cursor_row as usize) + 1;
+
+        (0..end_row)
+            .map(|r| {
+                (0..cols)
+                    .map(|c| match screen.cell(r as u16, c) {
+                        Some(vt_cell) => convert_cell(vt_cell),
+                        None => Cell::default(),
+                    })
+                    .collect()
+            })
+            .collect()
     }
 
     /// Get all visible rows for the detail panel, ensuring cursor is visible.
@@ -574,5 +638,56 @@ mod tests {
         let (_, rows) = vte.visible_rows_with_scroll(10, 20, 10);
         assert_eq!(rows.len(), 10);
         vte.set_scrollback(0);
+    }
+
+    #[test]
+    fn test_replay_history_basic() {
+        // Simulate 50 lines of output in a 20-col terminal
+        let mut output = Vec::new();
+        for i in 0..50 {
+            output.extend_from_slice(format!("line{:02}\r\n", i).as_bytes());
+        }
+
+        let lines = VteState::replay_history(&output, 20);
+
+        // Should have at least 50 lines (the output we wrote)
+        assert!(
+            lines.len() >= 50,
+            "expected >= 50 lines, got {}",
+            lines.len()
+        );
+
+        // First line should contain "line00"
+        let first: String = lines[0].iter().map(|c| c.ch).collect();
+        assert!(
+            first.starts_with("line00"),
+            "first line should be 'line00', got '{}'",
+            first.trim()
+        );
+
+        // Line 49 should contain "line49"
+        let line49: String = lines[49].iter().map(|c| c.ch).collect();
+        assert!(
+            line49.starts_with("line49"),
+            "line 49 should be 'line49', got '{}'",
+            line49.trim()
+        );
+    }
+
+    #[test]
+    fn test_replay_history_empty() {
+        let lines = VteState::replay_history(&[], 80);
+        assert!(lines.is_empty());
+    }
+
+    #[test]
+    fn test_replay_history_preserves_colors() {
+        // Red text: \x1b[31mhello\x1b[0m
+        let output = b"\x1b[31mhello\x1b[0m";
+        let lines = VteState::replay_history(output, 20);
+        assert!(!lines.is_empty());
+        let cell = &lines[0][0];
+        assert_eq!(cell.ch, 'h');
+        assert_eq!(cell.fg, Color::Red);
     }
 }

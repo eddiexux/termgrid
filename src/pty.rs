@@ -79,6 +79,17 @@ impl PtyHandle {
         matches!(self.child.try_wait(), Ok(None))
     }
 
+    /// Send SIGINT (Ctrl+C) to the child process.
+    #[cfg(unix)]
+    pub fn signal_interrupt(&self) {
+        if let Some(pid) = self.child.process_id() {
+            unsafe { libc::kill(pid as i32, libc::SIGINT); }
+        }
+    }
+
+    #[cfg(not(unix))]
+    pub fn signal_interrupt(&self) {}
+
     #[cfg(unix)]
     pub fn master_fd(&self) -> Option<i32> {
         self.master.as_raw_fd()

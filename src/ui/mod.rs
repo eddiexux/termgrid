@@ -30,6 +30,7 @@ pub fn render(
     selection: &Option<TextSelection>,
     detail_scroll_back: usize,
     has_selected_tile: bool,
+    scrollback_rows: Option<&[Vec<crate::screen::Cell>]>,
 ) -> RenderResult {
     tab_bar::render(
         frame,
@@ -106,6 +107,7 @@ pub fn render(
                 selected_label,
                 selection.as_ref(),
                 detail_scroll_back,
+                scrollback_rows,
             );
             cursor_pos = result.cursor_pos;
             if result.terminal_size.0 > 0 && result.terminal_size.1 > 0 {

@@ -94,6 +94,16 @@ pub fn build_title_line(tile: &Tile, index_label: Option<&str>) -> Line<'static>
         Style::default().fg(status_color),
     ));
 
+    // Claude Code indicator
+    if tile.is_claude_code() {
+        spans.push(Span::styled(
+            "[CC] ",
+            Style::default()
+                .fg(Color::Magenta)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
     // Index label for disambiguation (e.g. "[2]")
     if let Some(label) = index_label {
         spans.push(Span::styled(

@@ -10,12 +10,29 @@ use crate::tile::TileId;
 use crate::tile_manager::TileManager;
 use crate::ui;
 
+/// How text selection expands during drag.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum SelectionMode {
+    /// Character-level (normal drag).
+    Char,
+    /// Word-level (double-click + drag).
+    Word,
+    /// Line-level (triple-click + drag).
+    Line,
+}
+
 /// Text selection state for drag-to-copy.
 pub struct TextSelection {
     /// Screen coordinates where drag started.
     pub start: (u16, u16),
     /// Screen coordinates where drag currently is.
     pub end: (u16, u16),
+    /// Selection granularity.
+    pub mode: SelectionMode,
+    /// For Word/Line mode: the anchor word/line range (start_col, end_col) on the anchor row.
+    /// Used to keep the original word/line selected even when dragging away.
+    pub anchor_start: (u16, u16),
+    pub anchor_end: (u16, u16),
 }
 
 use crossterm::event::{Event as CEvent, EventStream, KeyEventKind};
@@ -64,6 +81,12 @@ pub struct App {
     selection: Option<TextSelection>,
     /// Screen position where mouse was pressed (to distinguish click from drag).
     drag_origin: Option<(u16, u16)>,
+    /// Multi-click tracking: timestamp of last MouseDown.
+    last_click_time: Option<std::time::Instant>,
+    /// Multi-click tracking: position of last MouseDown.
+    last_click_pos: Option<(u16, u16)>,
+    /// Multi-click tracking: consecutive click count (1=single, 2=double, 3=triple).
+    click_count: u8,
     /// How many rows the detail panel is scrolled back into history (0 = follow cursor).
     detail_scroll_offset: usize,
     /// Path to the config file, used for hot reload detection.
@@ -94,6 +117,9 @@ impl App {
             last_filtered_ids: Vec::new(),
             selection: None,
             drag_origin: None,
+            last_click_time: None,
+            last_click_pos: None,
+            click_count: 0,
             detail_scroll_offset: 0,
             config_path,
             config_last_modified,
@@ -173,12 +199,17 @@ impl App {
                 scroll_offset,
             );
 
-            // Set scrollback on selected tile BEFORE draw (needs &mut, can't do inside draw closure)
-            if self.detail_scroll_offset > 0 {
-                if let Some(tile) = self.tile_manager.selected_mut() {
-                    tile.vte.set_scrollback(self.detail_scroll_offset);
-                }
-            }
+            // Build scrollback rows from output_history replay when scrolled.
+            let scrollback_rows: Option<Vec<Vec<crate::screen::Cell>>> =
+                if self.detail_scroll_offset > 0 {
+                    if let Some(tile) = self.tile_manager.selected_mut() {
+                        Some(tile.scrollback_lines().to_vec())
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                };
 
             // Draw and capture real layout + actual terminal area size
             let mut captured_layout = layout_result;
@@ -203,16 +234,10 @@ impl App {
                     &self.selection,
                     self.detail_scroll_offset,
                     self.tile_manager.selected_id().is_some(),
+                    scrollback_rows.as_deref(),
                 );
                 actual_terminal_size = render_result.detail_terminal_size;
             })?;
-
-            // Reset scrollback after draw
-            if self.detail_scroll_offset > 0 {
-                if let Some(tile) = self.tile_manager.selected_mut() {
-                    tile.vte.set_scrollback(0);
-                }
-            }
 
             self.last_layout = Some(captured_layout.clone());
             self.last_filtered_ids = filtered_ids;
@@ -295,9 +320,10 @@ impl App {
                 let selected_id = self.tile_manager.selected_id();
                 if let Some(tile) = self.tile_manager.get_mut(tile_id) {
                     tile.process_output(&data);
-                    // Mark as unread if not currently selected
+                    // Only accumulate burst_bytes for non-selected tiles.
+                    // Selected tile output is being viewed by the user — not "unread".
                     if selected_id != Some(tile_id) {
-                        tile.has_unread = true;
+                        tile.burst_bytes += data.len();
                     }
                 } else {
                     tracing::debug!("PtyOutput for unknown tile {:?}", tile_id);
@@ -342,27 +368,81 @@ impl App {
 
         match mouse.kind {
             MouseEventKind::Down(MouseButton::Left) => {
-                // Record drag origin, clear any existing selection
-                self.drag_origin = Some((x, y));
-                self.selection = None;
+                let now = std::time::Instant::now();
+                let is_multi = self.last_click_time.map_or(false, |t| {
+                    now.duration_since(t) < Duration::from_millis(400)
+                }) && self.last_click_pos.map_or(false, |(px, py)| {
+                    x.abs_diff(px) <= 2 && y.abs_diff(py) <= 2
+                });
+
+                if is_multi {
+                    self.click_count = (self.click_count + 1).min(3);
+                } else {
+                    self.click_count = 1;
+                }
+                self.last_click_time = Some(now);
+                self.last_click_pos = Some((x, y));
+
+                match self.click_count {
+                    2 => {
+                        // Double-click: select word
+                        if let Some(sel) = self.select_word_at(x, y) {
+                            self.selection = Some(sel);
+                        }
+                        self.drag_origin = Some((x, y));
+                    }
+                    3 => {
+                        // Triple-click: select line
+                        if let Some(sel) = self.select_line_at(x, y) {
+                            self.selection = Some(sel);
+                        }
+                        self.drag_origin = Some((x, y));
+                    }
+                    _ => {
+                        // Single click: record drag origin, clear selection
+                        self.drag_origin = Some((x, y));
+                        self.selection = None;
+                    }
+                }
             }
             MouseEventKind::Drag(MouseButton::Left) => {
-                // Dragging — update selection
                 if let Some((sx, sy)) = self.drag_origin {
-                    self.selection = Some(TextSelection {
-                        start: (sx, sy),
-                        end: (x, y),
-                    });
+                    match self.click_count {
+                        2 => {
+                            // Word-mode drag: extend from anchor word to current word
+                            if let Some(sel) = self.extend_word_selection(sx, sy, x, y) {
+                                self.selection = Some(sel);
+                            }
+                        }
+                        3 => {
+                            // Line-mode drag: extend from anchor line to current line
+                            if let Some(sel) = self.extend_line_selection(sx, sy, x, y) {
+                                self.selection = Some(sel);
+                            }
+                        }
+                        _ => {
+                            // Char-mode drag
+                            self.selection = Some(TextSelection {
+                                start: (sx, sy),
+                                end: (x, y),
+                                mode: SelectionMode::Char,
+                                anchor_start: (sx, sy),
+                                anchor_end: (sx, sy),
+                            });
+                        }
+                    }
                 }
             }
             MouseEventKind::Up(MouseButton::Left) => {
                 if let Some(sel) = self.selection.take() {
-                    // Was dragging — copy selected text to clipboard
+                    // Had a selection (drag or multi-click) — copy to clipboard
                     self.copy_selection_to_clipboard(&sel);
                     self.drag_origin = None;
                 } else if let Some((ox, oy)) = self.drag_origin.take() {
-                    // Was a click (no drag) — handle tile selection
-                    self.handle_click(ox, oy);
+                    // Single click with no drag — handle tile selection
+                    if self.click_count <= 1 {
+                        self.handle_click(ox, oy);
+                    }
                 }
             }
             MouseEventKind::ScrollUp => {
@@ -375,11 +455,14 @@ impl App {
                             && y >= detail.y
                             && y < detail.y + detail.height
                         {
-                            // Clamp to max scrollback (screen rows) to prevent ghost offset
+                            // Clamp to total scrollback lines from output_history
                             let max_scroll = self
                                 .tile_manager
-                                .selected()
-                                .map(|t| t.vte.rows() as usize)
+                                .selected_mut()
+                                .map(|t| {
+                                    let screen_rows = t.vte.rows() as usize;
+                                    t.scrollback_line_count().saturating_sub(screen_rows)
+                                })
                                 .unwrap_or(0);
                             self.detail_scroll_offset =
                                 (self.detail_scroll_offset + 3).min(max_scroll);
@@ -539,6 +622,163 @@ impl App {
         // Click elsewhere → keep current selection (layout stays stable)
     }
 
+    /// Get detail panel terminal area geometry, or None if not available.
+    fn detail_term_area(&self) -> Option<(u16, u16, u16, u16)> {
+        let layout = self.last_layout.as_ref()?;
+        let detail = layout.detail_panel?;
+        let term_x = detail.x + crate::layout::DETAIL_BORDER_WIDTH;
+        let term_y = detail.y + crate::layout::DETAIL_HEADER_HEIGHT;
+        let term_w = detail
+            .width
+            .saturating_sub(crate::layout::DETAIL_BORDER_WIDTH);
+        let term_h = detail
+            .height
+            .saturating_sub(crate::layout::DETAIL_HEADER_HEIGHT);
+        if term_w == 0 || term_h == 0 {
+            return None;
+        }
+        Some((term_x, term_y, term_w, term_h))
+    }
+
+    /// Convert screen (x, y) to terminal buffer (row, col).
+    /// Returns None if outside the detail panel terminal area.
+    fn screen_to_buffer(&self, x: u16, y: u16) -> Option<(u16, u16)> {
+        let (term_x, term_y, term_w, term_h) = self.detail_term_area()?;
+        if x < term_x || y < term_y {
+            return None;
+        }
+        let col = x.saturating_sub(term_x);
+        let row = y.saturating_sub(term_y);
+        if col >= term_w || row >= term_h {
+            return None;
+        }
+
+        let tile = self.tile_manager.selected()?;
+        let vte = &tile.vte;
+        let (cursor_row, _) = vte.cursor_position();
+        let visible_rows = term_h as usize;
+        let total_rows = vte.rows() as usize;
+
+        let view_start = if total_rows <= visible_rows || (cursor_row as usize) < visible_rows {
+            0
+        } else {
+            (cursor_row as usize + 1).saturating_sub(visible_rows)
+        };
+
+        let buf_row = view_start as u16 + row;
+        if buf_row >= vte.rows() {
+            return None;
+        }
+        Some((buf_row, col))
+    }
+
+    /// Select the word at screen position (x, y). Returns None if outside terminal area.
+    fn select_word_at(&self, x: u16, y: u16) -> Option<TextSelection> {
+        let (term_x, term_y, _, _) = self.detail_term_area()?;
+        let (buf_row, buf_col) = self.screen_to_buffer(x, y)?;
+        let tile = self.tile_manager.selected()?;
+        let (word_start, word_end) = find_word_bounds(&tile.vte, buf_row, buf_col);
+
+        let screen_start = (term_x + word_start, term_y + (y - term_y));
+        let screen_end = (term_x + word_end, term_y + (y - term_y));
+
+        Some(TextSelection {
+            start: screen_start,
+            end: screen_end,
+            mode: SelectionMode::Word,
+            anchor_start: screen_start,
+            anchor_end: screen_end,
+        })
+    }
+
+    /// Select the entire line at screen position (x, y).
+    fn select_line_at(&self, _x: u16, y: u16) -> Option<TextSelection> {
+        let (term_x, _term_y, term_w, _) = self.detail_term_area()?;
+        // Verify we're in the terminal area
+        let _ = self.screen_to_buffer(term_x, y)?;
+
+        let screen_start = (term_x, y);
+        let screen_end = (term_x + term_w.saturating_sub(1), y);
+
+        Some(TextSelection {
+            start: screen_start,
+            end: screen_end,
+            mode: SelectionMode::Line,
+            anchor_start: screen_start,
+            anchor_end: screen_end,
+        })
+    }
+
+    /// Extend a word-mode selection from the anchor click to the current drag position.
+    fn extend_word_selection(
+        &self,
+        _sx: u16,
+        _sy: u16,
+        x: u16,
+        y: u16,
+    ) -> Option<TextSelection> {
+        // Get the anchor from the existing selection
+        let existing = self.selection.as_ref()?;
+        let (term_x, term_y, _, _) = self.detail_term_area()?;
+
+        // Find the word at the current drag position
+        let (buf_row, buf_col) = self.screen_to_buffer(x, y)?;
+        let tile = self.tile_manager.selected()?;
+        let (word_start, word_end) = find_word_bounds(&tile.vte, buf_row, buf_col);
+
+        let cur_start = (term_x + word_start, term_y + (y - term_y));
+        let cur_end = (term_x + word_end, term_y + (y - term_y));
+
+        // Union of anchor word and current word
+        let (sel_start, sel_end) = union_ranges(
+            existing.anchor_start,
+            existing.anchor_end,
+            cur_start,
+            cur_end,
+        );
+
+        Some(TextSelection {
+            start: sel_start,
+            end: sel_end,
+            mode: SelectionMode::Word,
+            anchor_start: existing.anchor_start,
+            anchor_end: existing.anchor_end,
+        })
+    }
+
+    /// Extend a line-mode selection from the anchor click to the current drag position.
+    fn extend_line_selection(
+        &self,
+        _sx: u16,
+        _sy: u16,
+        _x: u16,
+        y: u16,
+    ) -> Option<TextSelection> {
+        let existing = self.selection.as_ref()?;
+        let (term_x, term_y, term_w, term_h) = self.detail_term_area()?;
+
+        // Clamp y to terminal area
+        let clamped_y = y.clamp(term_y, term_y + term_h.saturating_sub(1));
+
+        let cur_start = (term_x, clamped_y);
+        let cur_end = (term_x + term_w.saturating_sub(1), clamped_y);
+
+        let (sel_start, sel_end) = union_ranges(
+            existing.anchor_start,
+            existing.anchor_end,
+            cur_start,
+            cur_end,
+        );
+
+        Some(TextSelection {
+            start: sel_start,
+            end: sel_end,
+            mode: SelectionMode::Line,
+            anchor_start: existing.anchor_start,
+            anchor_end: existing.anchor_end,
+        })
+    }
+
     fn copy_selection_to_clipboard(&self, sel: &TextSelection) {
         let layout = match &self.last_layout {
             Some(l) => l,
@@ -691,35 +931,101 @@ impl App {
 
         for id in tile_ids {
             #[cfg(unix)]
-            let is_fg_shell = {
+            let (is_fg_shell, fg_name) = {
                 if let Some(tile) = self.tile_manager.get(id) {
                     let master_fd = tile.pty.master_fd();
                     let pty_pid = tile.pty.pid();
                     if let (Some(fd), Some(pid)) = (master_fd, pty_pid) {
                         if let Some(fg_pid) = crate::process::get_foreground_pid(fd) {
-                            fg_pid == pid as i32
+                            let name = crate::process::get_process_name(fg_pid);
+                            (fg_pid == pid as i32, name)
                         } else {
-                            true
+                            (true, None)
                         }
                     } else {
-                        true
+                        (true, None)
                     }
                 } else {
-                    true
+                    (true, None)
                 }
             };
 
             #[cfg(not(unix))]
-            let is_fg_shell = true;
+            let (is_fg_shell, fg_name): (bool, Option<String>) = (true, None);
 
             if let Some(tile) = self.tile_manager.get_mut(id) {
                 tile.update_status(is_fg_shell);
+                tile.fg_process_name = fg_name;
+            }
+        }
+
+        // Detect "burst + silence" pattern for Claude Code unread notification.
+        // Only Claude Code tiles get the yellow border + system notification.
+        let selected_id = self.tile_manager.selected_id();
+        for tile in self.tile_manager.tiles_mut() {
+            if Some(tile.id) == selected_id {
+                continue;
+            }
+            if !tile.is_claude_code() {
+                continue;
+            }
+            if tile.has_unread {
+                continue; // already marked, wait for user to click
+            }
+            if tile.burst_bytes >= 500
+                && tile.last_active.elapsed() >= Duration::from_secs(5)
+            {
+                tile.has_unread = true;
+                tile.burst_bytes = 0;
+
+                // System notification
+                {
+                    #[cfg(target_os = "macos")]
+                    {
+                        let context = tile
+                            .git_context
+                            .as_ref()
+                            .map(|g| {
+                                if g.is_worktree {
+                                    g.worktree_name
+                                        .as_deref()
+                                        .unwrap_or(&g.project_name)
+                                        .to_string()
+                                } else {
+                                    g.project_name.clone()
+                                }
+                            })
+                            .unwrap_or_else(|| {
+                                tile.cwd
+                                    .file_name()
+                                    .and_then(|n| n.to_str())
+                                    .unwrap_or("unknown")
+                                    .to_string()
+                            });
+                        let script = format!(
+                            "display notification \"任务完成，等待输入\" with title \"Claude Code — {}\"",
+                            context.replace('"', "\\\"")
+                        );
+                        let _ = std::process::Command::new("osascript")
+                            .args(["-e", &script])
+                            .spawn();
+                    }
+                }
             }
         }
     }
 
     pub fn tile_manager_ref(&self) -> &TileManager {
         &self.tile_manager
+    }
+
+    pub fn tile_manager_mut(&mut self) -> &mut TileManager {
+        &mut self.tile_manager
+    }
+
+    /// Try to receive a pending event without blocking.
+    pub fn try_recv_event(&mut self) -> Result<crate::event::AppEvent, tokio::sync::mpsc::error::TryRecvError> {
+        self.event_rx.try_recv()
     }
 
     /// Restore scrollback content into a tile's VTE (for session restore).
@@ -793,6 +1099,143 @@ fn normalize_selection(
         (sy, sx, ey, ex)
     } else {
         (ey, ex, sy, sx)
+    }
+}
+
+/// Check if a character is a word separator.
+fn is_word_separator(ch: char) -> bool {
+    ch.is_whitespace() || matches!(ch, '/' | '\\' | ':' | '.' | ',' | ';' | '(' | ')' | '[' | ']' | '{' | '}' | '<' | '>' | '"' | '\'' | '`' | '|' | '&' | '=' | '+' | '-' | '*' | '!' | '?' | '@' | '#' | '$' | '%' | '^' | '~')
+}
+
+/// Find word boundaries around a given column in a buffer row.
+/// Returns (start_col, end_col) inclusive.
+fn find_word_bounds(vte: &crate::screen::VteState, row: u16, col: u16) -> (u16, u16) {
+    let cols = vte.cols();
+    let center_cell = vte.cell_at(row, col);
+
+    // If clicked on a separator, select just that character
+    if is_word_separator(center_cell.ch) {
+        return (col, col);
+    }
+
+    // Expand left
+    let mut start = col;
+    while start > 0 {
+        let cell = vte.cell_at(row, start - 1);
+        if is_word_separator(cell.ch) {
+            break;
+        }
+        start -= 1;
+    }
+
+    // Expand right
+    let mut end = col;
+    while end + 1 < cols {
+        let cell = vte.cell_at(row, end + 1);
+        if is_word_separator(cell.ch) {
+            break;
+        }
+        end += 1;
+    }
+
+    (start, end)
+}
+
+/// Union two screen-coordinate ranges into a single range covering both.
+/// Each range is (start_x, start_y) to (end_x, end_y) in screen coords.
+fn union_ranges(
+    a_start: (u16, u16),
+    a_end: (u16, u16),
+    b_start: (u16, u16),
+    b_end: (u16, u16),
+) -> ((u16, u16), (u16, u16)) {
+    // Compare in row-major order: (y, x)
+    let min_start = if (a_start.1, a_start.0) <= (b_start.1, b_start.0) {
+        a_start
+    } else {
+        b_start
+    };
+    let max_end = if (a_end.1, a_end.0) >= (b_end.1, b_end.0) {
+        a_end
+    } else {
+        b_end
+    };
+    (min_start, max_end)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_is_word_separator() {
+        assert!(is_word_separator(' '));
+        assert!(is_word_separator('/'));
+        assert!(is_word_separator(':'));
+        assert!(is_word_separator('.'));
+        assert!(!is_word_separator('a'));
+        assert!(!is_word_separator('Z'));
+        assert!(!is_word_separator('0'));
+        assert!(!is_word_separator('_')); // underscore is part of identifiers
+    }
+
+    #[test]
+    fn test_find_word_bounds_middle() {
+        let mut vte = crate::screen::VteState::new(20, 5);
+        vte.process(b"hello world foo");
+        // "hello" at cols 0-4, "world" at 6-10, "foo" at 12-14
+        assert_eq!(find_word_bounds(&vte, 0, 2), (0, 4)); // click on 'l' in "hello"
+        assert_eq!(find_word_bounds(&vte, 0, 7), (6, 10)); // click on 'o' in "world"
+        assert_eq!(find_word_bounds(&vte, 0, 12), (12, 14)); // click on 'f' in "foo"
+    }
+
+    #[test]
+    fn test_find_word_bounds_separator() {
+        let mut vte = crate::screen::VteState::new(20, 5);
+        vte.process(b"hello world");
+        // Click on space between words
+        assert_eq!(find_word_bounds(&vte, 0, 5), (5, 5));
+    }
+
+    #[test]
+    fn test_find_word_bounds_path() {
+        let mut vte = crate::screen::VteState::new(30, 5);
+        vte.process(b"/usr/local/bin");
+        // '/' is a separator, so each path component is a word
+        assert_eq!(find_word_bounds(&vte, 0, 1), (1, 3)); // "usr"
+        assert_eq!(find_word_bounds(&vte, 0, 5), (5, 9)); // "local"
+        assert_eq!(find_word_bounds(&vte, 0, 0), (0, 0)); // "/"
+    }
+
+    #[test]
+    fn test_find_word_bounds_edges() {
+        let mut vte = crate::screen::VteState::new(10, 5);
+        vte.process(b"abcdefghij");
+        // Entire row is one word (no separators)
+        assert_eq!(find_word_bounds(&vte, 0, 0), (0, 9));
+        assert_eq!(find_word_bounds(&vte, 0, 9), (0, 9));
+    }
+
+    #[test]
+    fn test_union_ranges_same_line() {
+        let (start, end) = union_ranges((2, 0), (5, 0), (8, 0), (12, 0));
+        assert_eq!(start, (2, 0));
+        assert_eq!(end, (12, 0));
+    }
+
+    #[test]
+    fn test_union_ranges_reversed() {
+        // Second range before first
+        let (start, end) = union_ranges((8, 1), (12, 1), (2, 0), (5, 0));
+        assert_eq!(start, (2, 0));
+        assert_eq!(end, (12, 1));
+    }
+
+    #[test]
+    fn test_union_ranges_multi_line() {
+        let (start, end) = union_ranges((0, 2), (10, 2), (0, 5), (10, 5));
+        assert_eq!(start, (0, 2));
+        assert_eq!(end, (10, 5));
     }
 }
 

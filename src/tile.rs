@@ -1,6 +1,6 @@
 use crate::git::{detect_git, GitContext};
 use crate::pty::{PtyHandle, PtyReader};
-use crate::screen::VteState;
+use crate::screen::{Cell, VteState};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
@@ -26,12 +26,27 @@ pub struct Tile {
     pub status: TileStatus,
     pub last_active: Instant,
     pub waiting_since: Option<Instant>,
-    /// True when new PTY output arrived while this tile was not selected.
+    /// True when a task has completed and is waiting for user attention.
     pub has_unread: bool,
+    /// Accumulated output bytes since last quiet detection or selection.
+    /// Used to detect "burst of output followed by silence" pattern.
+    pub burst_bytes: usize,
+    /// Name of the current foreground process (e.g. "claude", "node", "cargo").
+    pub fg_process_name: Option<String>,
     /// Ring buffer of raw PTY output for full history persistence.
     output_history: VecDeque<u8>,
-    /// Maximum bytes to keep in output history (256 KB per tile).
+    /// Maximum bytes to keep in output history (10 MB per tile).
     max_history_bytes: usize,
+    /// Cached scrollback lines from output_history replay.
+    scrollback_cache: Option<ScrollbackCache>,
+}
+
+/// Cached result of replaying output_history through a temporary parser.
+struct ScrollbackCache {
+    /// All lines from the replayed output.
+    lines: Vec<Vec<Cell>>,
+    /// output_history length when the cache was built.
+    history_len: usize,
 }
 
 impl Tile {
@@ -58,18 +73,72 @@ impl Tile {
             last_active: Instant::now(),
             waiting_since: None,
             has_unread: false,
+            burst_bytes: 0,
+            fg_process_name: None,
             output_history: VecDeque::new(),
             max_history_bytes: 10 * 1024 * 1024,
+            scrollback_cache: None,
         };
 
         Ok((tile, reader))
     }
 
     /// Feed bytes into the VTE parser and update last_active.
+    ///
+    /// When the program exits alternate screen (e.g. Claude Code after Ctrl+C),
+    /// the alternate screen content is captured and injected into output_history
+    /// so it remains accessible via scrollback. Without this, alternate screen
+    /// content would be lost on exit (standard terminal behavior).
     pub fn process_output(&mut self, bytes: &[u8]) {
         tracing::trace!("Tile {} received {} bytes", self.id.0, bytes.len());
+
+        // Capture alternate screen content BEFORE processing (it will be lost after).
+        let alt_capture = if self.vte.alternate_screen() {
+            Some(self.vte.capture_screen())
+        } else {
+            None
+        };
+
         self.vte.process(bytes);
         self.last_active = Instant::now();
+
+        // If we were on alt screen and now we're not, inject captured content.
+        if let Some(captured) = alt_capture {
+            if !self.vte.alternate_screen() && !captured.is_empty() {
+                tracing::debug!(
+                    "Tile {}: capturing {} bytes from alternate screen exit",
+                    self.id.0,
+                    captured.len()
+                );
+
+                // Inject captured alt screen content into output_history
+                // BEFORE the current bytes (which contain the exit sequence).
+                // Format: separator + captured ANSI content + separator + newline
+                let mut injected = Vec::new();
+                injected.extend_from_slice(b"\r\n");
+                injected.extend_from_slice(&captured);
+                injected.extend_from_slice(b"\r\n");
+
+                // Append injected content, then the current bytes
+                for &b in &injected {
+                    if self.output_history.len() >= self.max_history_bytes {
+                        self.output_history.pop_front();
+                    }
+                    self.output_history.push_back(b);
+                }
+                for &b in bytes {
+                    if self.output_history.len() >= self.max_history_bytes {
+                        self.output_history.pop_front();
+                    }
+                    self.output_history.push_back(b);
+                }
+
+                // Invalidate scrollback cache
+                self.scrollback_cache = None;
+                return; // already stored bytes, skip the normal path
+            }
+        }
+
         // Store raw output in ring buffer for full history persistence.
         for &b in bytes {
             if self.output_history.len() >= self.max_history_bytes {
@@ -82,9 +151,37 @@ impl Tile {
     /// Return all buffered raw PTY output as a contiguous Vec.
     ///
     /// On session restore, replaying these bytes through the VTE emulator
-    /// reconstructs the full scrollback (up to 256 KB per tile).
+    /// reconstructs the full scrollback (up to 10 MB per tile).
     pub fn output_history(&self) -> Vec<u8> {
         self.output_history.iter().copied().collect()
+    }
+
+    /// Get scrollback lines by replaying output_history.
+    /// Returns cached result if output hasn't changed since last call.
+    /// The returned lines cover the full terminal history, newest at the end.
+    pub fn scrollback_lines(&mut self) -> &[Vec<Cell>] {
+        let current_len = self.output_history.len();
+        let cache_valid = self
+            .scrollback_cache
+            .as_ref()
+            .map_or(false, |c| c.history_len == current_len);
+
+        if !cache_valid {
+            let history: Vec<u8> = self.output_history.iter().copied().collect();
+            let cols = self.vte.cols();
+            let lines = VteState::replay_history(&history, cols);
+            self.scrollback_cache = Some(ScrollbackCache {
+                lines,
+                history_len: current_len,
+            });
+        }
+
+        &self.scrollback_cache.as_ref().unwrap().lines
+    }
+
+    /// Total number of scrollback lines available.
+    pub fn scrollback_line_count(&mut self) -> usize {
+        self.scrollback_lines().len()
     }
 
     /// Update cwd; if it changed, re-detect git context.
@@ -132,6 +229,13 @@ impl Tile {
         self.pty.resize(cols, rows)?;
         self.vte.resize(cols, rows);
         Ok(())
+    }
+
+    /// Whether the foreground process is Claude Code.
+    pub fn is_claude_code(&self) -> bool {
+        self.fg_process_name
+            .as_ref()
+            .map_or(false, |name| name == "claude")
     }
 }
 
@@ -333,5 +437,153 @@ mod tests {
         let dir = std::env::current_dir().unwrap();
         let (tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
         assert_eq!(tile.max_history_bytes, 10 * 1024 * 1024);
+    }
+
+    #[test]
+    fn test_burst_bytes_not_incremented_by_process_output() {
+        let id = TileId(20);
+        let dir = std::env::current_dir().unwrap();
+        let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+
+        assert_eq!(tile.burst_bytes, 0);
+        // process_output does NOT increment burst_bytes (app.rs does it conditionally)
+        tile.process_output(b"hello world");
+        assert_eq!(tile.burst_bytes, 0);
+    }
+
+    #[test]
+    fn test_burst_bytes_manual_accumulation() {
+        let id = TileId(21);
+        let dir = std::env::current_dir().unwrap();
+        let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+
+        // Simulate what app.rs does for non-selected tiles
+        tile.process_output(b"chunk1");
+        tile.burst_bytes += 6;
+        tile.process_output(b"chunk2");
+        tile.burst_bytes += 6;
+
+        assert_eq!(tile.burst_bytes, 12);
+    }
+
+    #[test]
+    fn test_has_unread_initially_false() {
+        let id = TileId(22);
+        let dir = std::env::current_dir().unwrap();
+        let (tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+        assert!(!tile.has_unread);
+        assert_eq!(tile.burst_bytes, 0);
+    }
+
+    #[test]
+    fn test_alt_screen_content_captured_on_exit() {
+        let id = TileId(30);
+        let dir = std::env::current_dir().unwrap();
+        let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+
+        // Enter alternate screen and write content
+        tile.process_output(b"\x1b[?1049h"); // enter alt screen
+        assert!(tile.vte.alternate_screen());
+        tile.process_output(b"important task output\r\nline two\r\n");
+
+        let history_before = tile.output_history().len();
+
+        // Exit alternate screen — content should be captured
+        tile.process_output(b"\x1b[?1049l"); // exit alt screen
+        assert!(!tile.vte.alternate_screen());
+
+        let history_after = tile.output_history().len();
+        // History should be larger than before (captured content injected)
+        assert!(
+            history_after > history_before,
+            "history should grow after alt screen capture: {} > {}",
+            history_after,
+            history_before,
+        );
+
+        // The captured content should be in the history
+        let history_bytes = tile.output_history();
+        let history = String::from_utf8_lossy(&history_bytes);
+        assert!(
+            history.contains("important task output"),
+            "captured content should be in history"
+        );
+    }
+
+    #[test]
+    fn test_alt_screen_no_capture_when_staying_in_alt() {
+        let id = TileId(31);
+        let dir = std::env::current_dir().unwrap();
+        let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+
+        // Enter alternate screen
+        tile.process_output(b"\x1b[?1049h");
+        tile.process_output(b"some content");
+        let history_len = tile.output_history().len();
+
+        // More output while still in alt screen — no capture
+        tile.process_output(b"more content");
+        // History grows by the new output only (no capture injection)
+        let expected_growth = b"more content".len();
+        assert_eq!(
+            tile.output_history().len(),
+            history_len + expected_growth,
+        );
+    }
+
+    #[test]
+    fn test_alt_screen_capture_preserves_scrollback_cache_invalidation() {
+        let id = TileId(32);
+        let dir = std::env::current_dir().unwrap();
+        let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+
+        // Build a cache first
+        tile.process_output(b"initial output\r\n");
+        let _ = tile.scrollback_lines();
+        assert!(tile.scrollback_cache.is_some());
+
+        // Enter and exit alt screen
+        tile.process_output(b"\x1b[?1049h");
+        tile.process_output(b"alt content");
+        tile.process_output(b"\x1b[?1049l");
+
+        // Cache should be invalidated
+        assert!(tile.scrollback_cache.is_none());
+    }
+
+    #[test]
+    fn test_is_claude_code_detection() {
+        let id = TileId(40);
+        let dir = std::env::current_dir().unwrap();
+        let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+
+        // Initially no fg process name
+        assert!(!tile.is_claude_code());
+
+        // Set to claude
+        tile.fg_process_name = Some("claude".to_string());
+        assert!(tile.is_claude_code());
+
+        // Set to something else
+        tile.fg_process_name = Some("cargo".to_string());
+        assert!(!tile.is_claude_code());
+
+        // None
+        tile.fg_process_name = None;
+        assert!(!tile.is_claude_code());
+    }
+
+    #[test]
+    fn test_normal_output_no_spurious_capture() {
+        let id = TileId(33);
+        let dir = std::env::current_dir().unwrap();
+        let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+
+        // Normal output — no alt screen involved
+        tile.process_output(b"hello world\r\n");
+        tile.process_output(b"another line\r\n");
+
+        let history = tile.output_history();
+        assert_eq!(history, b"hello world\r\nanother line\r\n");
     }
 }

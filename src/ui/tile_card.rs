@@ -20,6 +20,8 @@ pub fn render(
         Color::Cyan
     } else if tile.has_unread {
         Color::Yellow
+    } else if tile.is_claude_code() {
+        Color::Magenta
     } else {
         Color::DarkGray
     };

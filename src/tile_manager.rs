@@ -86,9 +86,10 @@ impl TileManager {
 
     pub fn select(&mut self, id: TileId) {
         self.selected = Some(id);
-        // Clear unread flag when tile becomes selected
+        // Clear unread flag and reset burst counter when tile becomes selected
         if let Some(tile) = self.tiles.iter_mut().find(|t| t.id == id) {
             tile.has_unread = false;
+            tile.burst_bytes = 0;
         }
     }
 
@@ -442,16 +443,18 @@ mod tests {
     }
 
     #[test]
-    fn test_select_clears_unread() {
+    fn test_select_clears_unread_and_burst() {
         let mut mgr = TileManager::new();
         let id = make_tile(&mut mgr, Some("proj"));
-        // Mark as unread
+        // Simulate burst detection having triggered
         mgr.get_mut(id).unwrap().has_unread = true;
+        mgr.get_mut(id).unwrap().burst_bytes = 1000;
         assert!(mgr.get(id).unwrap().has_unread);
 
-        // Selecting should clear unread
+        // Selecting should clear both has_unread and burst_bytes
         mgr.select(id);
         assert!(!mgr.get(id).unwrap().has_unread);
+        assert_eq!(mgr.get(id).unwrap().burst_bytes, 0);
     }
 
     #[test]

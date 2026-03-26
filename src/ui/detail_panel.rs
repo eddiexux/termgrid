@@ -16,6 +16,8 @@ pub struct DetailRenderResult {
 }
 
 /// Render the detail panel. Returns cursor position and actual terminal area size.
+/// When `scrollback_rows` is provided (non-empty), it overrides the VTE scrollback
+/// and renders from the replay-based full history instead.
 pub fn render(
     frame: &mut Frame,
     area: Rect,
@@ -23,6 +25,7 @@ pub fn render(
     index_label: Option<&str>,
     selection: Option<&TextSelection>,
     scroll_back: usize,
+    scrollback_rows: Option<&[Vec<crate::screen::Cell>]>,
 ) -> DetailRenderResult {
     // Render the outer block with left border as vertical separator
     let block = Block::default()
@@ -96,7 +99,21 @@ pub fn render(
         let screen = &tile.vte;
         let (cursor_row, cursor_col) = screen.cursor_position();
 
-        let (start_row, row_cells) = screen.visible_rows_with_scroll(rows, cols, scroll_back);
+        // When scrollback_rows is provided, use the replay-based history
+        // to render a window at the given scroll offset.
+        let (start_row, row_cells) = if let Some(all_lines) = scrollback_rows {
+            // all_lines contains the full history. We want to show a window
+            // ending at (total - scroll_back) so that scroll_back=0 shows the bottom.
+            let total = all_lines.len();
+            let end = total.saturating_sub(scroll_back);
+            let start = end.saturating_sub(rows);
+            let window: Vec<Vec<crate::screen::Cell>> = all_lines
+                [start..end.min(total)]
+                .to_vec();
+            (start, window)
+        } else {
+            screen.visible_rows_with_scroll(rows, cols, scroll_back)
+        };
 
         // Helper: check if a screen-absolute coordinate falls within the selection.
         let is_selected = |screen_x: u16, screen_y: u16| -> bool {

@@ -76,6 +76,43 @@ pub fn get_process_cwd(pid: i32) -> Option<PathBuf> {
     }
 }
 
+/// Get the executable name of a process by its PID.
+///
+/// Uses `proc_pidpath` on macOS to get the full executable path.
+/// For symlinked binaries (e.g. Claude Code: `~/.local/bin/claude` →
+/// `~/.local/share/claude/versions/2.1.84`), `proc_pidpath` resolves
+/// the symlink, so we check the full path for known patterns.
+#[cfg(target_os = "macos")]
+pub fn get_process_name(pid: i32) -> Option<String> {
+    const PROC_PIDPATHINFO_MAXSIZE: usize = 4096;
+
+    let mut buf = vec![0u8; PROC_PIDPATHINFO_MAXSIZE];
+    let ret = unsafe {
+        libc::proc_pidpath(
+            pid,
+            buf.as_mut_ptr() as *mut libc::c_void,
+            PROC_PIDPATHINFO_MAXSIZE as u32,
+        )
+    };
+    if ret <= 0 {
+        return None;
+    }
+    let len = buf.iter().position(|&b| b == 0).unwrap_or(ret as usize);
+    let path = std::str::from_utf8(&buf[..len]).ok()?;
+
+    // Claude Code: symlink resolves to .local/share/claude/versions/<ver>
+    // Detect by checking if the path contains "/claude/versions/"
+    if path.contains("/claude/versions/") {
+        return Some("claude".to_string());
+    }
+
+    // Default: extract the file name from the path
+    std::path::Path::new(path)
+        .file_name()
+        .and_then(|n| n.to_str())
+        .map(String::from)
+}
+
 // Non-macOS stubs
 #[cfg(not(target_os = "macos"))]
 pub fn get_foreground_pid(_master_fd: i32) -> Option<i32> {
@@ -84,6 +121,11 @@ pub fn get_foreground_pid(_master_fd: i32) -> Option<i32> {
 
 #[cfg(not(target_os = "macos"))]
 pub fn get_process_cwd(_pid: i32) -> Option<PathBuf> {
+    None
+}
+
+#[cfg(not(target_os = "macos"))]
+pub fn get_process_name(_pid: i32) -> Option<String> {
     None
 }
 
@@ -112,5 +154,46 @@ mod tests {
         // Use an invalid PID that's unlikely to exist
         let invalid_pid = -1i32;
         assert_eq!(get_process_cwd(invalid_pid), None);
+    }
+
+    #[test]
+    fn test_get_process_name_invalid_pid() {
+        assert_eq!(get_process_name(-1), None);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_get_process_name_current() {
+        let pid = std::process::id() as i32;
+        let name = get_process_name(pid);
+        assert!(name.is_some(), "should get name for current process");
+        // The test binary name varies but should be non-empty
+        let name = name.unwrap();
+        assert!(!name.is_empty());
+        eprintln!("Current process name via proc_pidpath: {}", name);
+    }
+
+    #[test]
+    #[cfg(target_os = "macos")]
+    fn test_get_process_name_for_claude() {
+        // Find running claude processes and verify they are detected as "claude"
+        let output = std::process::Command::new("pgrep")
+            .arg("claude")
+            .output();
+        if let Ok(out) = output {
+            let text = String::from_utf8_lossy(&out.stdout);
+            for line in text.lines() {
+                if let Ok(pid) = line.trim().parse::<i32>() {
+                    let name = get_process_name(pid);
+                    eprintln!("pid {} → get_process_name = {:?}", pid, name);
+                    assert_eq!(
+                        name.as_deref(),
+                        Some("claude"),
+                        "Claude Code process should be detected as 'claude'"
+                    );
+                    break;
+                }
+            }
+        }
     }
 }

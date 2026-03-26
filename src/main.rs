@@ -90,6 +90,49 @@ async fn main() -> anyhow::Result<()> {
 
     app.run().await?;
 
+    // Graceful shutdown: send Ctrl+C twice to Claude Code tiles so they exit
+    // and print their session resume command. The output lands in output_history
+    // and gets saved with scrollback, so it's visible on next restore.
+    {
+        let tiles = app.tile_manager_ref().tiles();
+        let cc_tile_ids: Vec<_> = tiles
+            .iter()
+            .filter(|t| t.is_claude_code())
+            .map(|t| t.id)
+            .collect();
+
+        if !cc_tile_ids.is_empty() {
+            tracing::info!(
+                "Sending Ctrl+C x2 to {} Claude Code tile(s)",
+                cc_tile_ids.len()
+            );
+            // First Ctrl+C: cancel current task
+            for &id in &cc_tile_ids {
+                if let Some(tile) = app.tile_manager_ref().get(id) {
+                    tile.pty.signal_interrupt();
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+            // Second Ctrl+C: exit Claude Code
+            for &id in &cc_tile_ids {
+                if let Some(tile) = app.tile_manager_ref().get(id) {
+                    tile.pty.signal_interrupt();
+                }
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+            // Drain pending PTY output into tiles
+            while let Ok(event) = app.try_recv_event() {
+                if let termgrid::event::AppEvent::PtyOutput(tile_id, data) = event {
+                    if let Some(tile) = app.tile_manager_mut().get_mut(tile_id) {
+                        tile.process_output(&data);
+                    }
+                }
+            }
+        }
+    }
+
     // Save session with scrollback
     Session::clean_scrollback();
     let tiles = app.tile_manager_ref().tiles();
@@ -97,10 +140,6 @@ async fn main() -> anyhow::Result<()> {
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            // Save full raw output history for scrollback restore.
-            // This captures all PTY output (up to 256 KB), not just the
-            // visible screen — replaying it through the VTE on restore
-            // reconstructs the complete scrollback buffer.
             let scrollback_data = t.output_history();
             let scrollback_index = if !scrollback_data.is_empty() {
                 let _ = Session::save_scrollback(i, &scrollback_data);
@@ -108,6 +147,7 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 None
             };
+
             termgrid::session::TileSession {
                 cwd: t.cwd.clone(),
                 scrollback_index,
@@ -124,3 +164,4 @@ async fn main() -> anyhow::Result<()> {
 
     Ok(())
 }
+
