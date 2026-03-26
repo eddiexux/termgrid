@@ -68,6 +68,11 @@ impl VteState {
         self.parser.screen().size().0
     }
 
+    /// Get the terminal window title set via OSC escape sequences.
+    pub fn title(&self) -> &str {
+        self.parser.screen().title()
+    }
+
     /// Get cursor position (row, col).
     pub fn cursor_position(&self) -> (u16, u16) {
         self.parser.screen().cursor_position()
@@ -458,5 +463,116 @@ mod tests {
             first_content, first_no_scroll,
             "max scrollback should show different content than current screen"
         );
+    }
+
+    #[test]
+    fn test_title_from_osc() {
+        let mut vte = VteState::new(80, 24);
+        assert_eq!(vte.title(), "");
+
+        // OSC 0 sets window title: \x1b]0;title\x07
+        vte.process(b"\x1b]0;user@remote:~/code\x07");
+        assert_eq!(vte.title(), "user@remote:~/code");
+    }
+
+    #[test]
+    fn test_title_osc2_overrides() {
+        let mut vte = VteState::new(80, 24);
+        vte.process(b"\x1b]0;first title\x07");
+        assert_eq!(vte.title(), "first title");
+
+        // OSC 2 also sets window title
+        vte.process(b"\x1b]2;second title\x07");
+        assert_eq!(vte.title(), "second title");
+    }
+
+    #[test]
+    fn test_contents_formatted_roundtrip() {
+        let mut vte = VteState::new(40, 5);
+        vte.process(b"\x1b[31mred text\x1b[0m normal");
+
+        let formatted = vte.contents_formatted();
+        assert!(!formatted.is_empty());
+
+        // Replay into a new VTE and compare content
+        let mut vte2 = VteState::new(40, 5);
+        vte2.process(&formatted);
+
+        let cell1 = vte.cell_at(0, 0);
+        let cell2 = vte2.cell_at(0, 0);
+        assert_eq!(cell1.ch, cell2.ch);
+        assert_eq!(cell1.fg, cell2.fg);
+    }
+
+    #[test]
+    fn test_cell_at_out_of_bounds() {
+        let vte = VteState::new(10, 5);
+        // Beyond screen dimensions — should return default/space cell
+        let cell = vte.cell_at(100, 100);
+        assert_eq!(cell.ch, ' ');
+    }
+
+    #[test]
+    fn test_very_small_terminal() {
+        let mut vte = VteState::new(2, 2);
+        vte.process(b"ABCDEF");
+        // Should not panic; content wraps or truncates
+        assert_eq!(vte.cols(), 2);
+        assert_eq!(vte.rows(), 2);
+        let (_, rows) = vte.visible_rows_with_cursor(2, 2);
+        assert_eq!(rows.len(), 2);
+    }
+
+    #[test]
+    fn test_combined_modifiers() {
+        let mut vte = VteState::new(40, 5);
+        // Bold + Underline + Italic
+        vte.process(b"\x1b[1;3;4mtext\x1b[0m");
+        let cell = vte.cell_at(0, 0);
+        assert_eq!(cell.ch, 't');
+        assert!(cell.modifiers.contains(Modifier::BOLD));
+        assert!(cell.modifiers.contains(Modifier::UNDERLINED));
+    }
+
+    #[test]
+    fn test_visible_rows_with_cursor_at_top() {
+        let vte = VteState::new(20, 10);
+        // Cursor at top (default position)
+        let (start, rows) = vte.visible_rows_with_cursor(5, 20);
+        assert_eq!(start, 0);
+        assert!(rows.len() <= 5);
+    }
+
+    #[test]
+    fn test_visible_rows_with_cursor_at_bottom() {
+        let mut vte = VteState::new(20, 10);
+        // Move cursor to last row
+        vte.process(b"\x1b[10;1H"); // row 10, col 1
+        let (start, rows) = vte.visible_rows_with_cursor(5, 20);
+        // Window should be centered around cursor or show cursor
+        assert!(!rows.is_empty());
+        let cursor_row = vte.cursor_position().0 as usize;
+        assert!(
+            cursor_row >= start && cursor_row < start + rows.len(),
+            "cursor row {} should be within visible range {}..{}",
+            cursor_row,
+            start,
+            start + rows.len()
+        );
+    }
+
+    #[test]
+    fn test_scrollback_clamped_to_screen_rows() {
+        let mut vte = VteState::new(20, 10);
+        // Process enough to fill scrollback
+        for i in 0..50 {
+            vte.process(format!("line{}\r\n", i).as_bytes());
+        }
+        // set_scrollback should clamp to screen rows (10)
+        vte.set_scrollback(100);
+        // Should not panic; reading content should work
+        let (_, rows) = vte.visible_rows_with_scroll(10, 20, 10);
+        assert_eq!(rows.len(), 10);
+        vte.set_scrollback(0);
     }
 }

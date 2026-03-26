@@ -59,7 +59,7 @@ impl Tile {
             waiting_since: None,
             has_unread: false,
             output_history: VecDeque::new(),
-            max_history_bytes: 256 * 1024,
+            max_history_bytes: 10 * 1024 * 1024,
         };
 
         Ok((tile, reader))
@@ -249,5 +249,89 @@ mod tests {
 
         // History must not exceed max capacity
         assert_eq!(tile.output_history().len(), capacity);
+    }
+
+    #[test]
+    fn test_update_status_idle_after_timeout() {
+        let id = TileId(10);
+        let dir = std::env::current_dir().unwrap();
+        let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+
+        // Simulate waiting for a long time by setting waiting_since in the past
+        tile.waiting_since = Some(Instant::now() - std::time::Duration::from_secs(120));
+        tile.update_status(true);
+
+        match tile.status {
+            TileStatus::Idle(elapsed) => {
+                assert!(elapsed >= std::time::Duration::from_secs(60));
+            }
+            other => panic!("Expected Idle, got {:?}", other),
+        }
+    }
+
+    #[test]
+    fn test_update_cwd_same_path_no_redetect() {
+        let id = TileId(11);
+        let dir = std::env::current_dir().unwrap();
+        let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+
+        let git_before = tile.git_context.clone();
+        // Update with the same path — should not change git_context
+        tile.update_cwd(dir.clone());
+        assert_eq!(tile.git_context, git_before);
+        assert_eq!(tile.cwd, dir);
+    }
+
+    #[test]
+    fn test_update_cwd_different_path() {
+        let id = TileId(12);
+        let dir = std::env::current_dir().unwrap();
+        let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+
+        let new_dir = std::path::PathBuf::from("/tmp");
+        tile.update_cwd(new_dir.clone());
+        assert_eq!(tile.cwd, new_dir);
+        // /tmp is not a git repo
+        assert!(tile.git_context.is_none());
+    }
+
+    #[test]
+    fn test_output_history_preserves_order() {
+        let id = TileId(13);
+        let dir = std::env::current_dir().unwrap();
+        let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+
+        tile.process_output(b"AAA");
+        tile.process_output(b"BBB");
+        tile.process_output(b"CCC");
+        assert_eq!(tile.output_history(), b"AAABBBCCC");
+    }
+
+    #[test]
+    fn test_output_history_eviction_preserves_recent() {
+        let id = TileId(14);
+        let dir = std::env::current_dir().unwrap();
+        let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+
+        let capacity = tile.max_history_bytes;
+        // Fill with 'A's to capacity
+        tile.process_output(&vec![b'A'; capacity]);
+        // Then add 10 'B's — should evict oldest 10 'A's
+        tile.process_output(&vec![b'B'; 10]);
+
+        let history = tile.output_history();
+        assert_eq!(history.len(), capacity);
+        // Last 10 bytes should be 'B'
+        assert!(history[capacity - 10..].iter().all(|&b| b == b'B'));
+        // First bytes should be 'A'
+        assert_eq!(history[0], b'A');
+    }
+
+    #[test]
+    fn test_max_history_bytes_is_10mb() {
+        let id = TileId(15);
+        let dir = std::env::current_dir().unwrap();
+        let (tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+        assert_eq!(tile.max_history_bytes, 10 * 1024 * 1024);
     }
 }

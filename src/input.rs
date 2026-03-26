@@ -157,4 +157,88 @@ mod tests {
         handle_overlay_key(key(KeyCode::Char('q')), &mut mode, &mut tm);
         assert_eq!(mode, AppMode::Normal);
     }
+
+    #[test]
+    fn test_key_to_bytes_backspace() {
+        assert_eq!(key_event_to_bytes(&key(KeyCode::Backspace)), vec![0x7f]);
+    }
+
+    #[test]
+    fn test_key_to_bytes_tab() {
+        assert_eq!(key_event_to_bytes(&key(KeyCode::Tab)), b"\t");
+    }
+
+    #[test]
+    fn test_key_to_bytes_esc() {
+        assert_eq!(key_event_to_bytes(&key(KeyCode::Esc)), vec![0x1b]);
+    }
+
+    #[test]
+    fn test_key_to_bytes_delete() {
+        assert_eq!(key_event_to_bytes(&key(KeyCode::Delete)), b"\x1b[3~");
+    }
+
+    #[test]
+    fn test_key_to_bytes_home_end() {
+        assert_eq!(key_event_to_bytes(&key(KeyCode::Home)), b"\x1b[H");
+        assert_eq!(key_event_to_bytes(&key(KeyCode::End)), b"\x1b[F");
+    }
+
+    #[test]
+    fn test_key_to_bytes_all_arrows() {
+        assert_eq!(key_event_to_bytes(&key(KeyCode::Up)), b"\x1b[A");
+        assert_eq!(key_event_to_bytes(&key(KeyCode::Down)), b"\x1b[B");
+        assert_eq!(key_event_to_bytes(&key(KeyCode::Right)), b"\x1b[C");
+        assert_eq!(key_event_to_bytes(&key(KeyCode::Left)), b"\x1b[D");
+    }
+
+    #[test]
+    fn test_key_to_bytes_ctrl_a_to_z() {
+        // Ctrl+A = 1, Ctrl+Z = 26
+        for (i, ch) in ('a'..='z').enumerate() {
+            let k = ctrl_key(KeyCode::Char(ch));
+            assert_eq!(
+                key_event_to_bytes(&k),
+                vec![(i + 1) as u8],
+                "Ctrl+{} should be byte {}",
+                ch,
+                i + 1
+            );
+        }
+    }
+
+    #[test]
+    fn test_key_to_bytes_ctrl_bracket_is_escape() {
+        let k = ctrl_key(KeyCode::Char('['));
+        assert_eq!(key_event_to_bytes(&k), vec![0x1b]);
+    }
+
+    #[test]
+    fn test_key_to_bytes_unknown_returns_empty() {
+        let k = key(KeyCode::F(1));
+        assert_eq!(key_event_to_bytes(&k), Vec::<u8>::new());
+    }
+
+    #[test]
+    fn test_overlay_help_closes_on_any_key() {
+        // Test multiple different keys all close help
+        for code in [KeyCode::Esc, KeyCode::Enter, KeyCode::Char('q')] {
+            let mut mode = AppMode::Overlay(OverlayKind::Help);
+            let mut tm = TileManager::new();
+            handle_overlay_key(key(code), &mut mode, &mut tm);
+            assert_eq!(mode, AppMode::Normal);
+        }
+    }
+
+    #[test]
+    fn test_overlay_project_selector_esc_closes() {
+        let mut mode = AppMode::Overlay(OverlayKind::ProjectSelector {
+            query: String::new(),
+            items: vec![],
+            selected: 0,
+        });
+        let mut tm = TileManager::new();
+        handle_overlay_key(key(KeyCode::Esc), &mut mode, &mut tm);
+        assert_eq!(mode, AppMode::Normal);
+    }
 }

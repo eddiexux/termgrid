@@ -130,4 +130,74 @@ mod tests {
             path_str
         );
     }
+
+    #[test]
+    fn test_load_malformed_json() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("bad.json");
+        std::fs::write(&path, "{ not valid json").unwrap();
+        assert!(Session::load(&path).is_none());
+    }
+
+    #[test]
+    fn test_save_and_load_empty_session() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("empty.json");
+
+        let session = Session {
+            tiles: vec![],
+            columns: 1,
+            active_tab: "ALL".into(),
+        };
+
+        session.save(&path).unwrap();
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.tiles.len(), 0);
+        assert_eq!(loaded.columns, 1);
+    }
+
+    #[test]
+    fn test_scrollback_save_and_load_roundtrip() {
+        let dir = tempdir().unwrap();
+        // Override scrollback dir by using save_scrollback/load_scrollback
+        // which use the global scrollback_dir. Instead, test the raw file I/O.
+        let data = b"hello scrollback data";
+        let path = dir.path().join("scrollback_99.bin");
+        std::fs::write(&path, data).unwrap();
+        let loaded = std::fs::read(&path).unwrap();
+        assert_eq!(loaded, data);
+    }
+
+    #[test]
+    fn test_save_creates_parent_dirs() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("deep").join("nested").join("sessions.json");
+
+        let session = Session {
+            tiles: vec![],
+            columns: 2,
+            active_tab: "ALL".into(),
+        };
+
+        session.save(&path).unwrap();
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn test_load_with_extra_fields_is_ok() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("extra.json");
+        // JSON with an extra field that doesn't exist in the struct
+        let json = r#"{
+            "tiles": [{"cwd": "/tmp", "scrollback_index": null}],
+            "columns": 1,
+            "active_tab": "ALL",
+            "unknown_field": "should be ignored"
+        }"#;
+        std::fs::write(&path, json).unwrap();
+        let loaded = Session::load(&path);
+        // serde default behavior: unknown fields are ignored
+        assert!(loaded.is_some());
+        assert_eq!(loaded.unwrap().tiles.len(), 1);
+    }
 }

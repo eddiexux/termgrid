@@ -428,4 +428,216 @@ mod tests {
         mgr.select_direction(&filter, cols, Direction::Down);
         assert_eq!(mgr.selected_id(), Some(id2));
     }
+
+    #[test]
+    fn test_get_nonexistent_returns_none() {
+        let mgr = TileManager::new();
+        assert!(mgr.get(TileId(999)).is_none());
+    }
+
+    #[test]
+    fn test_remove_nonexistent_returns_none() {
+        let mut mgr = TileManager::new();
+        assert!(mgr.remove(TileId(999)).is_none());
+    }
+
+    #[test]
+    fn test_select_clears_unread() {
+        let mut mgr = TileManager::new();
+        let id = make_tile(&mut mgr, Some("proj"));
+        // Mark as unread
+        mgr.get_mut(id).unwrap().has_unread = true;
+        assert!(mgr.get(id).unwrap().has_unread);
+
+        // Selecting should clear unread
+        mgr.select(id);
+        assert!(!mgr.get(id).unwrap().has_unread);
+    }
+
+    #[test]
+    fn test_deselect_then_select_next() {
+        let mut mgr = TileManager::new();
+        let id1 = make_tile(&mut mgr, Some("alpha"));
+        let _id2 = make_tile(&mut mgr, Some("alpha"));
+
+        mgr.deselect();
+        assert_eq!(mgr.selected_id(), None);
+
+        // select_next with no selection should pick first
+        mgr.select_next(&TabFilter::All);
+        assert_eq!(mgr.selected_id(), Some(id1));
+    }
+
+    #[test]
+    fn test_select_next_empty_filter() {
+        let mut mgr = TileManager::new();
+        let id = make_tile(&mut mgr, Some("proj"));
+        mgr.select(id);
+
+        // Filter for a nonexistent project — no tiles match
+        mgr.select_next(&TabFilter::Project("nonexistent".into()));
+        // Should keep current selection
+        assert_eq!(mgr.selected_id(), Some(id));
+    }
+
+    #[test]
+    fn test_select_prev_cycles() {
+        let mut mgr = TileManager::new();
+        let id1 = make_tile(&mut mgr, Some("alpha"));
+        let id2 = make_tile(&mut mgr, Some("alpha"));
+        let id3 = make_tile(&mut mgr, Some("alpha"));
+
+        let filter = TabFilter::All;
+        mgr.select(id1);
+
+        // prev from first should wrap to last
+        mgr.select_prev(&filter);
+        assert_eq!(mgr.selected_id(), Some(id3));
+
+        mgr.select_prev(&filter);
+        assert_eq!(mgr.selected_id(), Some(id2));
+
+        mgr.select_prev(&filter);
+        assert_eq!(mgr.selected_id(), Some(id1));
+    }
+
+    #[test]
+    fn test_select_direction_uneven_grid() {
+        // 3 tiles in 2-column layout:
+        //   row 0: t0 t1
+        //   row 1: t2
+        let mut mgr = TileManager::new();
+        let id0 = make_tile(&mut mgr, Some("proj"));
+        let id1 = make_tile(&mut mgr, Some("proj"));
+        let id2 = make_tile(&mut mgr, Some("proj"));
+
+        let filter = TabFilter::All;
+        let cols = 2;
+
+        // From t1 (row=0, col=1), Down should stay (no tile below)
+        mgr.select(id1);
+        mgr.select_direction(&filter, cols, Direction::Down);
+        assert_eq!(mgr.selected_id(), Some(id1));
+
+        // From t0 (row=0, col=0), Down → t2
+        mgr.select(id0);
+        mgr.select_direction(&filter, cols, Direction::Down);
+        assert_eq!(mgr.selected_id(), Some(id2));
+
+        // From t2 (row=1, col=0), Right should stay (no tile to right in last row)
+        mgr.select(id2);
+        mgr.select_direction(&filter, cols, Direction::Right);
+        assert_eq!(mgr.selected_id(), Some(id2));
+    }
+
+    #[test]
+    fn test_select_direction_zero_columns() {
+        let mut mgr = TileManager::new();
+        let id = make_tile(&mut mgr, Some("proj"));
+        mgr.select(id);
+
+        // 0 columns should be a no-op
+        mgr.select_direction(&TabFilter::All, 0, Direction::Right);
+        assert_eq!(mgr.selected_id(), Some(id));
+    }
+
+    #[test]
+    fn test_select_direction_no_selection() {
+        let mut mgr = TileManager::new();
+        let id = make_tile(&mut mgr, Some("proj"));
+        mgr.deselect();
+
+        // With no selection, direction should select first tile
+        mgr.select_direction(&TabFilter::All, 2, Direction::Right);
+        assert_eq!(mgr.selected_id(), Some(id));
+    }
+
+    #[test]
+    fn test_select_direction_single_column() {
+        // 3 tiles in 1-column layout → pure vertical
+        let mut mgr = TileManager::new();
+        let id0 = make_tile(&mut mgr, Some("proj"));
+        let id1 = make_tile(&mut mgr, Some("proj"));
+        let id2 = make_tile(&mut mgr, Some("proj"));
+
+        let filter = TabFilter::All;
+        mgr.select(id0);
+
+        // Right at col boundary → stays
+        mgr.select_direction(&filter, 1, Direction::Right);
+        assert_eq!(mgr.selected_id(), Some(id0));
+
+        // Down → next tile
+        mgr.select_direction(&filter, 1, Direction::Down);
+        assert_eq!(mgr.selected_id(), Some(id1));
+
+        mgr.select_direction(&filter, 1, Direction::Down);
+        assert_eq!(mgr.selected_id(), Some(id2));
+    }
+
+    #[test]
+    fn test_filtered_tiles_ordering() {
+        let mut mgr = TileManager::new();
+        // Git tiles should come before non-git tiles
+        let _id_none = make_tile(&mut mgr, None);
+        let _id_proj = make_tile(&mut mgr, Some("zeta"));
+        let _id_proj2 = make_tile(&mut mgr, Some("alpha"));
+
+        let all = mgr.filtered_tiles(&TabFilter::All);
+        // Git tiles (prefixed "0:") sorted before non-git ("1:")
+        assert!(all[0].git_context.is_some());
+        assert!(all[1].git_context.is_some());
+        assert!(all[2].git_context.is_none());
+        // Git tiles sorted by project name
+        assert_eq!(
+            all[0].git_context.as_ref().unwrap().project_name,
+            "alpha"
+        );
+        assert_eq!(
+            all[1].git_context.as_ref().unwrap().project_name,
+            "zeta"
+        );
+    }
+
+    #[test]
+    fn test_remove_first_tile_selects_next() {
+        let mut mgr = TileManager::new();
+        let id1 = make_tile(&mut mgr, Some("a"));
+        let id2 = make_tile(&mut mgr, Some("b"));
+
+        mgr.select(id1);
+        mgr.remove(id1);
+
+        // Should select id2 (the tile now at position 0)
+        assert_eq!(mgr.selected_id(), Some(id2));
+    }
+
+    #[test]
+    fn test_remove_last_in_list_selects_previous() {
+        let mut mgr = TileManager::new();
+        let id1 = make_tile(&mut mgr, Some("a"));
+        let id2 = make_tile(&mut mgr, Some("b"));
+
+        mgr.select(id2);
+        mgr.remove(id2);
+
+        // Should select id1 (clamped to len-1)
+        assert_eq!(mgr.selected_id(), Some(id1));
+    }
+
+    #[test]
+    fn test_remove_unselected_keeps_selection() {
+        let mut mgr = TileManager::new();
+        let id1 = make_tile(&mut mgr, Some("a"));
+        let id2 = make_tile(&mut mgr, Some("b"));
+        let id3 = make_tile(&mut mgr, Some("c"));
+
+        mgr.select(id1);
+        mgr.remove(id2);
+
+        // id1 still selected
+        assert_eq!(mgr.selected_id(), Some(id1));
+        assert_eq!(mgr.tile_count(), 2);
+        assert!(mgr.get(id3).is_some());
+    }
 }

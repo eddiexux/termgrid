@@ -452,7 +452,11 @@ impl App {
             // [+] new tile button
             let plus_btn_start = x_btn_start.saturating_sub(5);
             if x >= plus_btn_start && x < x_btn_start {
-                let cwd = std::env::current_dir().unwrap_or_default();
+                let cwd = self
+                    .tile_manager
+                    .selected()
+                    .map(|t| t.cwd.clone())
+                    .unwrap_or_else(|| std::env::current_dir().unwrap_or_default());
                 if let Ok(id) = self.spawn_tile(&cwd) {
                     self.tile_manager.select(id);
                 }

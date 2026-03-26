@@ -219,4 +219,50 @@ mod tests {
 
         assert_eq!(ctx.branch, Some("feature/my-feature".to_string()));
     }
+
+    #[test]
+    fn test_detect_detached_head() {
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        let commit_oid = make_initial_commit(&repo);
+
+        // Detach HEAD by pointing directly at a commit
+        repo.set_head_detached(commit_oid).unwrap();
+
+        let ctx = detect_git(dir.path()).unwrap();
+        // Detached HEAD: shorthand is the abbreviated oid
+        assert!(ctx.branch.is_some());
+        assert!(!ctx.is_worktree);
+    }
+
+    #[test]
+    fn test_detect_empty_repo_no_commits() {
+        let dir = TempDir::new().unwrap();
+        let _repo = git2::Repository::init(dir.path()).unwrap();
+        // No commits made — HEAD is unborn
+
+        let ctx = detect_git(dir.path()).unwrap();
+        // Branch should be None when HEAD doesn't exist
+        assert_eq!(ctx.branch, None);
+        assert!(!ctx.is_worktree);
+    }
+
+    #[test]
+    fn test_strip_git_suffix() {
+        assert_eq!(strip_git_suffix("my-repo.git"), "my-repo");
+        assert_eq!(strip_git_suffix("my-repo"), "my-repo");
+        assert_eq!(strip_git_suffix(".git"), "");
+        assert_eq!(strip_git_suffix(""), "");
+    }
+
+    #[test]
+    fn test_repo_root_is_workdir() {
+        let dir = TempDir::new().unwrap();
+        let repo = git2::Repository::init(dir.path()).unwrap();
+        make_initial_commit(&repo);
+
+        let ctx = detect_git(dir.path()).unwrap();
+        // repo_root should be the working directory
+        assert_eq!(ctx.repo_root.canonicalize().unwrap(), dir.path().canonicalize().unwrap());
+    }
 }
