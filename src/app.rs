@@ -19,10 +19,10 @@ pub struct TextSelection {
 }
 
 use crossterm::event::{Event as CEvent, EventStream, KeyEventKind};
+use crossterm::execute;
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use crossterm::execute;
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -390,9 +390,7 @@ impl App {
         // Detect double-click: same position within 400ms
         let is_double_click = self
             .last_click
-            .map(|(t, lx, ly)| {
-                now.duration_since(t).as_millis() < 400 && lx == x && ly == y
-            })
+            .map(|(t, lx, ly)| now.duration_since(t).as_millis() < 400 && lx == x && ly == y)
             .unwrap_or(false);
 
         self.last_click = Some((now, x, y));
@@ -406,11 +404,7 @@ impl App {
 
         // Click on a tile card?
         for (i, rect) in layout.tile_rects.iter().enumerate() {
-            if x >= rect.x
-                && x < rect.x + rect.width
-                && y >= rect.y
-                && y < rect.y + rect.height
-            {
+            if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
                 if let Some(&tile_id) = self.last_filtered_ids.get(i) {
                     self.tile_manager.select(tile_id);
                     if is_double_click {
@@ -457,8 +451,12 @@ impl App {
         // (detail panel minus left border and header)
         let term_x = detail.x + crate::layout::DETAIL_BORDER_WIDTH;
         let term_y = detail.y + crate::layout::DETAIL_HEADER_HEIGHT;
-        let term_w = detail.width.saturating_sub(crate::layout::DETAIL_BORDER_WIDTH);
-        let term_h = detail.height.saturating_sub(crate::layout::DETAIL_HEADER_HEIGHT);
+        let term_w = detail
+            .width
+            .saturating_sub(crate::layout::DETAIL_BORDER_WIDTH);
+        let term_h = detail
+            .height
+            .saturating_sub(crate::layout::DETAIL_HEADER_HEIGHT);
 
         if term_w == 0 || term_h == 0 {
             return;

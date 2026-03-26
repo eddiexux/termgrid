@@ -95,7 +95,8 @@ pub fn render(
                 .and_then(|i| index_labels.get(i))
                 .and_then(|l| l.as_deref())
         });
-        let result = detail_panel::render(frame, detail_area, tile, selected_label, selection.as_ref());
+        let result =
+            detail_panel::render(frame, detail_area, tile, selected_label, selection.as_ref());
         cursor_pos = result.cursor_pos;
         if result.terminal_size.0 > 0 && result.terminal_size.1 > 0 {
             detail_terminal_size = Some(result.terminal_size);
