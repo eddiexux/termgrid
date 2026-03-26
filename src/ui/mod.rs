@@ -33,6 +33,12 @@ pub fn screen_rows_to_lines(rows: &[&[crate::screen::Cell]], max_width: usize) -
         .collect()
 }
 
+/// Render result with actual terminal area size for PTY synchronization.
+pub struct RenderResult {
+    /// Actual detail panel terminal area dimensions (cols, rows), if panel is visible.
+    pub detail_terminal_size: Option<(u16, u16)>,
+}
+
 pub fn render(
     frame: &mut Frame,
     layout: &LayoutResult,
@@ -41,7 +47,7 @@ pub fn render(
     active_tab: &TabFilter,
     mode: &AppMode,
     columns: u8,
-) {
+) -> RenderResult {
     tab_bar::render(
         frame,
         layout.tab_bar,
@@ -90,16 +96,20 @@ pub fn render(
         }
     }
 
-    // Render detail panel if selected, get cursor from it
+    // Render detail panel if selected, get cursor and actual terminal size
     let mut cursor_pos = None;
+    let mut detail_terminal_size = None;
     if let (Some(detail_area), Some(tile)) = (layout.detail_panel, tile_manager.selected()) {
-        // Find index_label for the selected tile
         let selected_label = selected_id.and_then(|sid| {
             filtered.iter().position(|t| t.id == sid)
                 .and_then(|i| index_labels.get(i))
                 .and_then(|l| l.as_deref())
         });
-        cursor_pos = detail_panel::render(frame, detail_area, tile, selected_label);
+        let result = detail_panel::render(frame, detail_area, tile, selected_label);
+        cursor_pos = result.cursor_pos;
+        if result.terminal_size.0 > 0 && result.terminal_size.1 > 0 {
+            detail_terminal_size = Some(result.terminal_size);
+        }
     }
 
     // If no detail panel, use tile card cursor
@@ -126,4 +136,6 @@ pub fn render(
             frame.set_cursor_position(ratatui::layout::Position::new(cx, cy));
         }
     }
+
+    RenderResult { detail_terminal_size }
 }

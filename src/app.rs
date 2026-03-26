@@ -149,8 +149,9 @@ impl App {
                 scroll_offset,
             );
 
-            // Draw and capture real layout
+            // Draw and capture real layout + actual terminal area size
             let mut captured_layout = layout_result;
+            let mut actual_terminal_size: Option<(u16, u16)> = None;
             terminal.draw(|frame| {
                 let total = frame.area();
                 captured_layout = layout::calculate_layout(
@@ -161,7 +162,7 @@ impl App {
                     detail_width,
                     scroll_offset,
                 );
-                ui::render(
+                let render_result = ui::render(
                     frame,
                     &captured_layout,
                     &self.tile_manager,
@@ -170,18 +171,16 @@ impl App {
                     &self.mode,
                     columns,
                 );
+                actual_terminal_size = render_result.detail_terminal_size;
             })?;
 
             self.last_layout = Some(captured_layout.clone());
             self.last_filtered_ids = filtered_ids;
 
-            // Sync PTY size with actual detail panel terminal area.
-            // Detail panel terminal area = panel rect minus left border (1 col) minus header (3 rows).
-            if let Some(detail_rect) = captured_layout.detail_panel {
-                let (pty_cols, pty_rows) = Self::pty_size_from_detail_panel(&detail_rect);
-                if pty_cols >= 10 && pty_rows >= 5 {
-                    self.sync_pty_sizes(pty_cols, pty_rows);
-                }
+            // Sync PTY size with the ACTUAL terminal area reported by the renderer.
+            // This is the precise size, not an estimate.
+            if let Some((pty_cols, pty_rows)) = actual_terminal_size {
+                self.sync_pty_sizes(pty_cols, pty_rows);
             }
 
             // Wait for at least one event, then drain all pending events before re-rendering.
@@ -440,14 +439,6 @@ impl App {
 
     pub fn set_columns(&mut self, columns: u8) {
         self.columns = columns.clamp(1, 3);
-    }
-
-    /// Compute PTY dimensions from detail panel rect.
-    /// Detail panel terminal area = panel minus left border (1 col) minus header (3 rows).
-    fn pty_size_from_detail_panel(detail: &ratatui::layout::Rect) -> (u16, u16) {
-        let cols = detail.width.saturating_sub(crate::layout::DETAIL_BORDER_WIDTH).max(10);
-        let rows = detail.height.saturating_sub(crate::layout::DETAIL_HEADER_HEIGHT).max(5);
-        (cols, rows)
     }
 
     /// Estimate PTY dimensions before first render (when detail panel rect is unknown).

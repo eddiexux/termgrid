@@ -7,8 +7,15 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
-/// Render the detail panel. Returns cursor screen position if cursor should be shown.
-pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&str>) -> Option<(u16, u16)> {
+/// Render result: cursor position + actual terminal area dimensions for PTY sync.
+pub struct DetailRenderResult {
+    pub cursor_pos: Option<(u16, u16)>,
+    /// Actual terminal area dimensions (cols, rows) for PTY size synchronization.
+    pub terminal_size: (u16, u16),
+}
+
+/// Render the detail panel. Returns cursor position and actual terminal area size.
+pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&str>) -> DetailRenderResult {
     // Render the outer block with left border as vertical separator
     let block = Block::default()
         .borders(Borders::LEFT)
@@ -19,13 +26,13 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&s
     frame.render_widget(block, area);
 
     if inner.height == 0 || inner.width == 0 {
-        return None;
+        return DetailRenderResult { cursor_pos: None, terminal_size: (0, 0) };
     }
 
     // Split: header lines + separator + terminal area
     let header_height = crate::layout::DETAIL_HEADER_HEIGHT;
     if inner.height <= header_height {
-        return None;
+        return DetailRenderResult { cursor_pos: None, terminal_size: (0, 0) };
     }
 
     let chunks = Layout::default()
@@ -45,11 +52,10 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&s
     // Line 1: unified title (same format as tile card)
     header_lines.push(super::title::build_title_line(tile, index_label));
 
-    // Line 2: path
-    let path_str = tile.cwd.display().to_string();
+    // Line 2: keyboard hints
     header_lines.push(Line::from(vec![Span::styled(
-        path_str,
-        Style::default().fg(Color::Gray),
+        "Esc close │ ↑↓ switch │ i insert",
+        Style::default().fg(Color::DarkGray),
     )]));
 
     // Line 3: separator
@@ -106,5 +112,8 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&s
             }
         }
     }
-    cursor_pos
+    DetailRenderResult {
+        cursor_pos,
+        terminal_size: (terminal_area.width, terminal_area.height),
+    }
 }
