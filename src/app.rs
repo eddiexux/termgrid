@@ -55,6 +55,8 @@ pub struct App {
     last_filtered_ids: Vec<crate::tile::TileId>,
     /// For double-click detection: (time, column, row).
     last_click: Option<(std::time::Instant, u16, u16)>,
+    /// Whether mouse capture is enabled (can be toggled for text selection).
+    mouse_captured: bool,
 }
 
 impl App {
@@ -74,6 +76,7 @@ impl App {
             last_layout: None,
             last_filtered_ids: Vec::new(),
             last_click: None,
+            mouse_captured: true,
         }
     }
 
@@ -128,6 +131,7 @@ impl App {
             let scroll_offset = self.scroll_offset;
             let detail_width = self.config.layout.detail_panel_width;
             let filtered_count = self.tile_manager.filtered_tiles(&self.active_tab).len();
+            let mouse_captured = self.mouse_captured;
 
             let filtered_ids: Vec<TileId> = self
                 .tile_manager
@@ -166,6 +170,7 @@ impl App {
                     &self.active_tab,
                     &self.mode,
                     columns,
+                    mouse_captured,
                 );
                 actual_terminal_size = render_result.detail_terminal_size;
             })?;
@@ -240,6 +245,19 @@ impl App {
                             let cwd = std::env::current_dir().unwrap_or_default();
                             if let Ok(id) = self.spawn_tile(&cwd) {
                                 self.tile_manager.select(id);
+                            }
+                            return;
+                        }
+                        KeyCode::Char('m') => {
+                            // Toggle mouse capture for text selection
+                            self.mouse_captured = !self.mouse_captured;
+                            let mut stdout = std::io::stdout();
+                            if self.mouse_captured {
+                                let _ = execute!(stdout, EnableMouseCapture);
+                                tracing::info!("Mouse capture enabled");
+                            } else {
+                                let _ = execute!(stdout, DisableMouseCapture);
+                                tracing::info!("Mouse capture disabled — use terminal native selection");
                             }
                             return;
                         }

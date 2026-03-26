@@ -18,6 +18,7 @@ pub struct RenderResult {
     pub detail_terminal_size: Option<(u16, u16)>,
 }
 
+#[allow(clippy::too_many_arguments)]
 pub fn render(
     frame: &mut Frame,
     layout: &LayoutResult,
@@ -26,6 +27,7 @@ pub fn render(
     active_tab: &TabFilter,
     mode: &AppMode,
     columns: u8,
+    mouse_captured: bool,
 ) -> RenderResult {
     tab_bar::render(
         frame,
@@ -111,6 +113,7 @@ pub fn render(
         mode,
         tile_manager.tile_count(),
         columns,
+        mouse_captured,
     );
 
     if let AppMode::Overlay(ref kind) = mode {

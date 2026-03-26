@@ -7,7 +7,14 @@ use ratatui::{
     Frame,
 };
 
-pub fn render(frame: &mut Frame, area: Rect, mode: &AppMode, session_count: usize, columns: u8) {
+pub fn render(
+    frame: &mut Frame,
+    area: Rect,
+    mode: &AppMode,
+    session_count: usize,
+    columns: u8,
+    mouse_captured: bool,
+) {
     let mut spans = Vec::new();
 
     // Mode tag
@@ -24,9 +31,20 @@ pub fn render(frame: &mut Frame, area: Rect, mode: &AppMode, session_count: usiz
             .add_modifier(Modifier::BOLD),
     ));
 
+    // Mouse state indicator
+    if !mouse_captured {
+        spans.push(Span::styled(
+            " [SELECT] ",
+            Style::default()
+                .fg(Color::Black)
+                .bg(Color::Yellow)
+                .add_modifier(Modifier::BOLD),
+        ));
+    }
+
     // Info text
     let info = format!(
-        " termgrid | {} sessions | {} cols | ?help",
+        " termgrid | {} sessions | {} cols | m:mouse ?:help",
         session_count, columns
     );
     spans.push(Span::styled(info, Style::default().fg(Color::Gray)));
