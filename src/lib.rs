@@ -2,4 +2,5 @@
 pub mod config;
 pub mod git;
 pub mod pty;
+pub mod process;
 pub mod screen;
