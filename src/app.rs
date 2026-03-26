@@ -174,8 +174,18 @@ impl App {
                 );
             })?;
 
-            self.last_layout = Some(captured_layout);
+            self.last_layout = Some(captured_layout.clone());
             self.last_filtered_ids = filtered_ids;
+
+            // Sync PTY size with actual detail panel terminal area.
+            // Detail panel terminal area = panel rect minus left border (1 col) minus header (3 rows).
+            if let Some(detail_rect) = captured_layout.detail_panel {
+                let pty_cols = detail_rect.width.saturating_sub(1); // left border
+                let pty_rows = detail_rect.height.saturating_sub(3); // header lines
+                if pty_cols >= 10 && pty_rows >= 5 {
+                    self.sync_pty_sizes(pty_cols, pty_rows);
+                }
+            }
 
             // Wait for at least one event, then drain all pending events before re-rendering.
             // This reduces render lag when multiple events arrive quickly (e.g. PTY output bursts).
@@ -433,6 +443,17 @@ impl App {
 
     pub fn set_columns(&mut self, columns: u8) {
         self.columns = columns.clamp(1, 3);
+    }
+
+    /// Resize all tiles' PTY + screen buffer to match the actual detail panel terminal area.
+    /// Only resizes tiles whose current screen dimensions differ.
+    fn sync_pty_sizes(&mut self, cols: u16, rows: u16) {
+        for tile in self.tile_manager.tiles_mut() {
+            let screen = &tile.vte.screen;
+            if screen.cols() != cols as usize || screen.rows() != rows as usize {
+                let _ = tile.resize(cols, rows);
+            }
+        }
     }
 }
 
