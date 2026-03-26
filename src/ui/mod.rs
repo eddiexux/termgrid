@@ -109,7 +109,9 @@ pub fn render(
         overlay::render(frame, total_area, kind);
     }
 
-    // Show blinking cursor when in Insert mode
+    // Show blinking hardware cursor in Insert mode.
+    // Always show — the cursor_pos is always computed regardless of terminal cursor
+    // visibility state, so the user always sees a blinking cursor when typing.
     if matches!(mode, AppMode::Insert) {
         if let Some((cx, cy)) = cursor_pos {
             frame.set_cursor_position(ratatui::layout::Position::new(cx, cy));

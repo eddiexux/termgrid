@@ -102,8 +102,11 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&s
         let terminal_para = Paragraph::new(Text::from(text_lines));
         frame.render_widget(terminal_para, terminal_area);
 
-        // Compute cursor screen position
-        if screen.cursor_visible() && cursor_row as usize >= start_row {
+        // Always compute cursor screen position.
+        // Don't gate on cursor_visible() — shells temporarily hide cursor during
+        // prompt rendering, which would make cursor_pos None and break Insert mode.
+        // The caller (ui/mod.rs) decides when to actually display the hardware cursor.
+        if cursor_row as usize >= start_row {
             let screen_row = (cursor_row as usize - start_row) as u16;
             if screen_row < terminal_area.height && cursor_col < terminal_area.width {
                 cursor_pos = Some((
