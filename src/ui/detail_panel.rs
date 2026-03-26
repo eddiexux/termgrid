@@ -1,3 +1,4 @@
+use crate::app::TextSelection;
 use crate::tile::Tile;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
@@ -20,6 +21,7 @@ pub fn render(
     area: Rect,
     tile: &Tile,
     index_label: Option<&str>,
+    selection: Option<&TextSelection>,
 ) -> DetailRenderResult {
     // Render the outer block with left border as vertical separator
     let block = Block::default()
@@ -87,20 +89,54 @@ pub fn render(
 
         let (start_row, row_cells) = screen.visible_rows_with_cursor(rows, cols);
 
+        // Helper: check if a screen-absolute coordinate falls within the selection.
+        let is_selected = |screen_x: u16, screen_y: u16| -> bool {
+            if let Some(sel) = selection {
+                let (sx, sy) = sel.start;
+                let (ex, ey) = sel.end;
+                let (min_y, max_y) = if sy <= ey { (sy, ey) } else { (ey, sy) };
+                let (min_x_first, max_x_last) = if sy <= ey { (sx, ex) } else { (ex, sx) };
+                if screen_y < min_y || screen_y > max_y {
+                    return false;
+                }
+                if screen_y == min_y && screen_y == max_y {
+                    let min_x = min_x_first.min(max_x_last);
+                    let max_x = min_x_first.max(max_x_last);
+                    return screen_x >= min_x && screen_x <= max_x;
+                }
+                if screen_y == min_y {
+                    return screen_x >= min_x_first;
+                }
+                if screen_y == max_y {
+                    return screen_x <= max_x_last;
+                }
+                true // middle rows fully selected
+            } else {
+                false
+            }
+        };
+
         let text_lines: Vec<Line> = row_cells
             .iter()
-            .map(|row| {
+            .enumerate()
+            .map(|(display_row, row)| {
+                let cell_screen_y = terminal_area.y + display_row as u16;
                 let spans: Vec<Span> = row
                     .iter()
-                    .filter(|cell| !cell.is_wide_continuation)
-                    .map(|cell| {
-                        Span::styled(
-                            cell.ch.to_string(),
+                    .enumerate()
+                    .filter(|(_, cell)| !cell.is_wide_continuation)
+                    .map(|(col_offset, cell)| {
+                        let cell_screen_x = terminal_area.x + col_offset as u16;
+                        let highlight = is_selected(cell_screen_x, cell_screen_y);
+                        let style = if highlight {
+                            Style::default().fg(Color::Black).bg(Color::LightBlue)
+                        } else {
                             Style::default()
                                 .fg(cell.fg)
                                 .bg(cell.bg)
-                                .add_modifier(cell.modifiers),
-                        )
+                                .add_modifier(cell.modifiers)
+                        };
+                        Span::styled(cell.ch.to_string(), style)
                     })
                     .collect();
                 Line::from(spans)

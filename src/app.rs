@@ -10,6 +10,14 @@ use crate::tile::TileId;
 use crate::tile_manager::TileManager;
 use crate::ui;
 
+/// Text selection state for drag-to-copy.
+pub struct TextSelection {
+    /// Screen coordinates where drag started.
+    pub start: (u16, u16),
+    /// Screen coordinates where drag currently is.
+    pub end: (u16, u16),
+}
+
 use crossterm::event::{Event as CEvent, EventStream, KeyEventKind};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
@@ -55,6 +63,10 @@ pub struct App {
     last_filtered_ids: Vec<crate::tile::TileId>,
     /// For double-click detection: (time, column, row).
     last_click: Option<(std::time::Instant, u16, u16)>,
+    /// Active text selection (drag in progress or completed).
+    selection: Option<TextSelection>,
+    /// Screen position where mouse was pressed (to distinguish click from drag).
+    drag_origin: Option<(u16, u16)>,
 }
 
 impl App {
@@ -74,6 +86,8 @@ impl App {
             last_layout: None,
             last_filtered_ids: Vec::new(),
             last_click: None,
+            selection: None,
+            drag_origin: None,
         }
     }
 
@@ -101,12 +115,11 @@ impl App {
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
-        // Enable click-only mouse tracking (mode 1000).
-        // Drag events (1002/1003) NOT enabled — terminal still handles text selection.
-        // Shift+drag for selection in terminals that need it.
+        // Enable click + drag mouse tracking with SGR encoding.
+        // Mode 1000: click events, 1002: drag (button motion), 1006: SGR extended coords.
         {
             use std::io::Write;
-            stdout.write_all(b"\x1b[?1000h\x1b[?1006h")?;
+            stdout.write_all(b"\x1b[?1000h\x1b[?1002h\x1b[?1006h")?;
             stdout.flush()?;
         }
         let backend = CrosstermBackend::new(std::io::stdout());
@@ -174,6 +187,7 @@ impl App {
                     &self.active_tab,
                     &self.mode,
                     columns,
+                    &self.selection,
                 );
                 actual_terminal_size = render_result.detail_terminal_size;
             })?;
@@ -211,7 +225,7 @@ impl App {
         {
             use std::io::Write;
             let mut stdout = std::io::stdout();
-            stdout.write_all(b"\x1b[?1000l\x1b[?1006l")?;
+            stdout.write_all(b"\x1b[?1000l\x1b[?1002l\x1b[?1006l")?;
             stdout.flush()?;
         }
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
@@ -224,6 +238,9 @@ impl App {
     fn handle_event(&mut self, event: AppEvent) {
         match event {
             AppEvent::Crossterm(CEvent::Key(key)) => {
+                // Clear any active selection on key press
+                self.selection = None;
+
                 // Only handle Press events (ignore Repeat/Release on some platforms)
                 if key.kind != KeyEventKind::Press {
                     return;
@@ -320,68 +337,35 @@ impl App {
     }
 
     fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
-        use crossterm::event::MouseEventKind;
-
-        let layout = match &self.last_layout {
-            Some(l) => l,
-            None => return,
-        };
+        use crossterm::event::{MouseButton, MouseEventKind};
 
         let x = mouse.column;
         let y = mouse.row;
 
         match mouse.kind {
-            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
-                let now = std::time::Instant::now();
-
-                // Detect double-click: same position within 400ms
-                let is_double_click = self
-                    .last_click
-                    .map(|(t, lx, ly)| {
-                        now.duration_since(t).as_millis() < 400 && lx == x && ly == y
-                    })
-                    .unwrap_or(false);
-
-                self.last_click = Some((now, x, y));
-
-                // Click on tab bar?
-                if y >= layout.tab_bar.y && y < layout.tab_bar.y + layout.tab_bar.height {
-                    let tab_entries = self.compute_tab_entries();
-                    self.active_tab = tab::next_tab(&self.active_tab, &tab_entries);
-                    return;
+            MouseEventKind::Down(MouseButton::Left) => {
+                // Record drag origin, clear any existing selection
+                self.drag_origin = Some((x, y));
+                self.selection = None;
+            }
+            MouseEventKind::Drag(MouseButton::Left) => {
+                // Dragging — update selection
+                if let Some((sx, sy)) = self.drag_origin {
+                    self.selection = Some(TextSelection {
+                        start: (sx, sy),
+                        end: (x, y),
+                    });
                 }
-
-                // Click on a tile card?
-                for (i, rect) in layout.tile_rects.iter().enumerate() {
-                    if x >= rect.x
-                        && x < rect.x + rect.width
-                        && y >= rect.y
-                        && y < rect.y + rect.height
-                    {
-                        if let Some(&tile_id) = self.last_filtered_ids.get(i) {
-                            self.tile_manager.select(tile_id);
-                            if is_double_click {
-                                self.mode = AppMode::Insert; // double-click → Insert
-                            } else {
-                                self.mode = AppMode::Normal;
-                            }
-                        }
-                        return;
-                    }
+            }
+            MouseEventKind::Up(MouseButton::Left) => {
+                if let Some(sel) = self.selection.take() {
+                    // Was dragging — copy selected text to clipboard
+                    self.copy_selection_to_clipboard(&sel);
+                    self.drag_origin = None;
+                } else if let Some((ox, oy)) = self.drag_origin.take() {
+                    // Was a click (no drag) — handle tile selection
+                    self.handle_click(ox, oy);
                 }
-
-                // Click on detail panel while in Normal → enter Insert
-                if let Some(d) = layout.detail_panel {
-                    if x >= d.x && x < d.x + d.width && y >= d.y && y < d.y + d.height {
-                        if is_double_click && self.tile_manager.selected_id().is_some() {
-                            self.mode = AppMode::Insert;
-                        }
-                        return;
-                    }
-                }
-
-                // Click elsewhere → deselect
-                self.tile_manager.deselect();
             }
             MouseEventKind::ScrollUp => {
                 if self.scroll_offset > 0 {
@@ -392,6 +376,159 @@ impl App {
                 self.scroll_offset += 1;
             }
             _ => {}
+        }
+    }
+
+    fn handle_click(&mut self, x: u16, y: u16) {
+        let layout = match &self.last_layout {
+            Some(l) => l.clone(),
+            None => return,
+        };
+
+        let now = std::time::Instant::now();
+
+        // Detect double-click: same position within 400ms
+        let is_double_click = self
+            .last_click
+            .map(|(t, lx, ly)| {
+                now.duration_since(t).as_millis() < 400 && lx == x && ly == y
+            })
+            .unwrap_or(false);
+
+        self.last_click = Some((now, x, y));
+
+        // Click on tab bar?
+        if y >= layout.tab_bar.y && y < layout.tab_bar.y + layout.tab_bar.height {
+            let tab_entries = self.compute_tab_entries();
+            self.active_tab = tab::next_tab(&self.active_tab, &tab_entries);
+            return;
+        }
+
+        // Click on a tile card?
+        for (i, rect) in layout.tile_rects.iter().enumerate() {
+            if x >= rect.x
+                && x < rect.x + rect.width
+                && y >= rect.y
+                && y < rect.y + rect.height
+            {
+                if let Some(&tile_id) = self.last_filtered_ids.get(i) {
+                    self.tile_manager.select(tile_id);
+                    if is_double_click {
+                        self.mode = AppMode::Insert; // double-click → Insert
+                    } else {
+                        self.mode = AppMode::Normal;
+                    }
+                }
+                return;
+            }
+        }
+
+        // Click on detail panel while in Normal → enter Insert
+        if let Some(d) = layout.detail_panel {
+            if x >= d.x && x < d.x + d.width && y >= d.y && y < d.y + d.height {
+                if is_double_click && self.tile_manager.selected_id().is_some() {
+                    self.mode = AppMode::Insert;
+                }
+                return;
+            }
+        }
+
+        // Click elsewhere → deselect
+        self.tile_manager.deselect();
+    }
+
+    fn copy_selection_to_clipboard(&self, sel: &TextSelection) {
+        let layout = match &self.last_layout {
+            Some(l) => l,
+            None => return,
+        };
+
+        let detail = match layout.detail_panel {
+            Some(d) => d,
+            None => return, // No detail panel → nothing to copy from
+        };
+
+        let tile = match self.tile_manager.selected() {
+            Some(t) => t,
+            None => return,
+        };
+
+        // Compute the terminal area within the detail panel
+        // (detail panel minus left border and header)
+        let term_x = detail.x + crate::layout::DETAIL_BORDER_WIDTH;
+        let term_y = detail.y + crate::layout::DETAIL_HEADER_HEIGHT;
+        let term_w = detail.width.saturating_sub(crate::layout::DETAIL_BORDER_WIDTH);
+        let term_h = detail.height.saturating_sub(crate::layout::DETAIL_HEADER_HEIGHT);
+
+        if term_w == 0 || term_h == 0 {
+            return;
+        }
+
+        // Normalize selection coordinates (start <= end) in terminal-area-relative coords
+        let (start_row, start_col, end_row, end_col) =
+            normalize_selection(sel.start, sel.end, term_x, term_y, term_w, term_h);
+
+        // Compute view_start (same logic as detail_panel render's visible_rows_with_cursor)
+        let vte = &tile.vte;
+        let (cursor_row, _) = vte.cursor_position();
+        let visible_rows = term_h as usize;
+        let total_rows = vte.rows() as usize;
+
+        let view_start = if total_rows <= visible_rows || (cursor_row as usize) < visible_rows {
+            0
+        } else {
+            (cursor_row as usize + 1).saturating_sub(visible_rows)
+        };
+
+        let mut text = String::new();
+        for screen_y in start_row..=end_row {
+            let buf_row = view_start + screen_y as usize;
+            if buf_row >= total_rows {
+                break;
+            }
+
+            let col_start = if screen_y == start_row { start_col } else { 0 };
+            let col_end = if screen_y == end_row {
+                end_col
+            } else {
+                term_w.saturating_sub(1)
+            };
+
+            for col in col_start..=col_end {
+                if col >= vte.cols() {
+                    break;
+                }
+                let cell = vte.cell_at(buf_row as u16, col);
+                if !cell.is_wide_continuation {
+                    text.push(cell.ch);
+                }
+            }
+
+            // Add newline between rows (but not after last row), trimming trailing spaces
+            if screen_y < end_row {
+                while text.ends_with(' ') {
+                    text.pop();
+                }
+                text.push('\n');
+            }
+        }
+
+        let text = text.trim_end().to_string();
+        if text.is_empty() {
+            return;
+        }
+
+        // Copy to clipboard via pbcopy (macOS)
+        tracing::info!("Copying {} chars to clipboard", text.len());
+        if let Ok(mut child) = std::process::Command::new("pbcopy")
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+        {
+            if let Some(stdin) = child.stdin.as_mut() {
+                use std::io::Write;
+                let _ = stdin.write_all(text.as_bytes());
+            }
+            let _ = child.wait();
         }
     }
 
@@ -511,6 +648,29 @@ impl App {
                 let _ = tile.resize(cols, rows);
             }
         }
+    }
+}
+
+/// Normalize selection to (start_row, start_col, end_row, end_col) in terminal-area-relative coords.
+fn normalize_selection(
+    start: (u16, u16),
+    end: (u16, u16),
+    term_x: u16,
+    term_y: u16,
+    term_w: u16,
+    term_h: u16,
+) -> (u16, u16, u16, u16) {
+    let clamp_x = |x: u16| x.saturating_sub(term_x).min(term_w.saturating_sub(1));
+    let clamp_y = |y: u16| y.saturating_sub(term_y).min(term_h.saturating_sub(1));
+
+    let (sy, sx) = (clamp_y(start.1), clamp_x(start.0));
+    let (ey, ex) = (clamp_y(end.1), clamp_x(end.0));
+
+    // Ensure start <= end (row-major order)
+    if sy < ey || (sy == ey && sx <= ex) {
+        (sy, sx, ey, ex)
+    } else {
+        (ey, ex, sy, sx)
     }
 }
 

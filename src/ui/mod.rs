@@ -5,7 +5,7 @@ pub mod tab_bar;
 pub mod tile_card;
 pub mod title;
 
-use crate::app::AppMode;
+use crate::app::{AppMode, TextSelection};
 use crate::layout::LayoutResult;
 use crate::tab::{TabEntry, TabFilter};
 use crate::tile_manager::TileManager;
@@ -27,6 +27,7 @@ pub fn render(
     active_tab: &TabFilter,
     mode: &AppMode,
     columns: u8,
+    selection: &Option<TextSelection>,
 ) -> RenderResult {
     tab_bar::render(
         frame,
@@ -94,7 +95,7 @@ pub fn render(
                 .and_then(|i| index_labels.get(i))
                 .and_then(|l| l.as_deref())
         });
-        let result = detail_panel::render(frame, detail_area, tile, selected_label);
+        let result = detail_panel::render(frame, detail_area, tile, selected_label, selection.as_ref());
         cursor_pos = result.cursor_pos;
         if result.terminal_size.0 > 0 && result.terminal_size.1 > 0 {
             detail_terminal_size = Some(result.terminal_size);
