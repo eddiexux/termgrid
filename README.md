@@ -28,6 +28,18 @@ Manage multiple terminal sessions in a single dashboard. Each tile automatically
 cargo install --git https://github.com/eddiexux/termgrid.git
 ```
 
+### Update to latest version
+
+```bash
+cargo install --git https://github.com/eddiexux/termgrid.git --force
+```
+
+### Install a specific version
+
+```bash
+cargo install --git https://github.com/eddiexux/termgrid.git --tag v0.1.0
+```
+
 ### Build locally
 
 ```bash
