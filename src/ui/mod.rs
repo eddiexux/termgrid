@@ -29,6 +29,7 @@ pub fn render(
     columns: u8,
     selection: &Option<TextSelection>,
     detail_scroll_back: usize,
+    has_selected_tile: bool,
 ) -> RenderResult {
     tab_bar::render(
         frame,
@@ -128,7 +129,6 @@ pub fn render(
     status_bar::render(
         frame,
         layout.status_bar,
-        mode,
         tile_manager.tile_count(),
         columns,
     );
@@ -138,10 +138,8 @@ pub fn render(
         overlay::render(frame, total_area, kind);
     }
 
-    // Show blinking hardware cursor in Insert mode.
-    // Always show — the cursor_pos is always computed regardless of terminal cursor
-    // visibility state, so the user always sees a blinking cursor when typing.
-    if matches!(mode, AppMode::Insert) {
+    // Show blinking hardware cursor when a tile is selected (keyboard goes to PTY).
+    if has_selected_tile {
         if let Some((cx, cy)) = cursor_pos {
             frame.set_cursor_position(ratatui::layout::Position::new(cx, cy));
         }

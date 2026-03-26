@@ -1,129 +1,19 @@
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{AppMode, OverlayKind};
-use crate::tab::{self, TabEntry, TabFilter};
-use crate::tile::TileStatus;
-use crate::tile_manager::{Direction, TileManager};
+use crate::tile_manager::TileManager;
 
-pub enum InputResult {
-    Continue,
-    Quit,
-}
-
-/// Dispatch a key event based on current app mode.
-pub fn handle_key(
+/// Handle key events in Overlay mode (help, confirm close, project selector).
+pub fn handle_overlay_key(
     key: KeyEvent,
     mode: &mut AppMode,
     tile_manager: &mut TileManager,
-    active_tab: &mut TabFilter,
-    tab_entries: &[TabEntry],
-    columns: u8,
-) -> InputResult {
-    match mode.clone() {
-        AppMode::Normal => {
-            handle_normal_key(key, mode, tile_manager, active_tab, tab_entries, columns)
-        }
-        AppMode::Insert => handle_insert_key(key, mode, tile_manager),
-        AppMode::Overlay(ref kind) => handle_overlay_key(key, mode, tile_manager, kind.clone()),
-    }
-}
+) {
+    let kind = match mode {
+        AppMode::Overlay(ref k) => k.clone(),
+        _ => return,
+    };
 
-fn handle_normal_key(
-    key: KeyEvent,
-    mode: &mut AppMode,
-    tile_manager: &mut TileManager,
-    active_tab: &mut TabFilter,
-    tab_entries: &[TabEntry],
-    columns: u8,
-) -> InputResult {
-    match key.code {
-        KeyCode::Char('q') => return InputResult::Quit,
-        KeyCode::Char('?') => {
-            *mode = AppMode::Overlay(OverlayKind::Help);
-        }
-        KeyCode::Up | KeyCode::Char('k') => {
-            tile_manager.select_direction(active_tab, columns as usize, Direction::Up);
-        }
-        KeyCode::Down | KeyCode::Char('j') => {
-            tile_manager.select_direction(active_tab, columns as usize, Direction::Down);
-        }
-        KeyCode::Left | KeyCode::Char('h') => {
-            tile_manager.select_direction(active_tab, columns as usize, Direction::Left);
-        }
-        KeyCode::Right | KeyCode::Char('l') => {
-            tile_manager.select_direction(active_tab, columns as usize, Direction::Right);
-        }
-        KeyCode::Char('i') | KeyCode::Enter => {
-            if tile_manager.selected_id().is_some() {
-                *mode = AppMode::Insert;
-            }
-        }
-        KeyCode::Esc => {
-            tile_manager.deselect();
-        }
-        KeyCode::Char('n') => {
-            *mode = AppMode::Overlay(OverlayKind::ProjectSelector {
-                query: String::new(),
-                items: Vec::new(),
-                selected: 0,
-            });
-        }
-        KeyCode::Char('x') => {
-            if let Some(id) = tile_manager.selected_id() {
-                let needs_confirm = tile_manager
-                    .get(id)
-                    .map(|t| t.status == TileStatus::Running)
-                    .unwrap_or(false);
-                if needs_confirm {
-                    *mode = AppMode::Overlay(OverlayKind::ConfirmClose(id));
-                } else {
-                    tile_manager.remove(id);
-                }
-            }
-        }
-        KeyCode::Tab => {
-            *active_tab = tab::next_tab(active_tab, tab_entries);
-        }
-        KeyCode::BackTab => {
-            *active_tab = tab::prev_tab(active_tab, tab_entries);
-        }
-        _ => {}
-    }
-    InputResult::Continue
-}
-
-fn handle_insert_key(
-    key: KeyEvent,
-    mode: &mut AppMode,
-    tile_manager: &mut TileManager,
-) -> InputResult {
-    // Esc → back to Normal mode
-    // Also support Ctrl+] (reported as Char(']')+CONTROL or raw Char('\x1d'))
-    let is_exit = key.code == KeyCode::Esc
-        || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char(']'))
-        || key.code == KeyCode::Char('\x1d');
-    if is_exit {
-        *mode = AppMode::Normal;
-        return InputResult::Continue;
-    }
-
-    // Forward all other keys to the selected PTY
-    let bytes = key_event_to_bytes(&key);
-    if !bytes.is_empty() {
-        if let Some(tile) = tile_manager.selected_mut() {
-            let _ = tile.write_input(&bytes);
-        }
-    }
-
-    InputResult::Continue
-}
-
-fn handle_overlay_key(
-    key: KeyEvent,
-    mode: &mut AppMode,
-    tile_manager: &mut TileManager,
-    kind: OverlayKind,
-) -> InputResult {
     match kind {
         OverlayKind::Help => {
             // Any key closes the help overlay
@@ -139,10 +29,8 @@ fn handle_overlay_key(
             if key.code == KeyCode::Esc {
                 *mode = AppMode::Normal;
             }
-            // Other keys could filter the project list — handled by App
         }
     }
-    InputResult::Continue
 }
 
 /// Convert a crossterm KeyEvent into the bytes to send to the PTY.
@@ -232,5 +120,41 @@ mod tests {
         let k = key(KeyCode::Char('中'));
         let expected = '中'.to_string().into_bytes();
         assert_eq!(key_event_to_bytes(&k), expected);
+    }
+
+    #[test]
+    fn test_overlay_help_any_key_closes() {
+        let mut mode = AppMode::Overlay(OverlayKind::Help);
+        let mut tm = TileManager::new();
+        handle_overlay_key(key(KeyCode::Char('a')), &mut mode, &mut tm);
+        assert_eq!(mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_overlay_confirm_close_y_removes() {
+        let mut mode =
+            AppMode::Overlay(OverlayKind::ConfirmClose(crate::tile::TileId(999)));
+        let mut tm = TileManager::new();
+        // 'y' on a nonexistent tile still transitions to Normal
+        handle_overlay_key(key(KeyCode::Char('y')), &mut mode, &mut tm);
+        assert_eq!(mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_overlay_confirm_close_n_cancels() {
+        let mut mode =
+            AppMode::Overlay(OverlayKind::ConfirmClose(crate::tile::TileId(999)));
+        let mut tm = TileManager::new();
+        handle_overlay_key(key(KeyCode::Char('n')), &mut mode, &mut tm);
+        assert_eq!(mode, AppMode::Normal);
+    }
+
+    #[test]
+    fn test_noop_on_normal_mode() {
+        let mut mode = AppMode::Normal;
+        let mut tm = TileManager::new();
+        // Should not panic or change anything
+        handle_overlay_key(key(KeyCode::Char('q')), &mut mode, &mut tm);
+        assert_eq!(mode, AppMode::Normal);
     }
 }

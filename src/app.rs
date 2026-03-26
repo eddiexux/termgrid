@@ -32,7 +32,6 @@ use tokio::sync::mpsc;
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppMode {
     Normal,
-    Insert,
     Overlay(OverlayKind),
 }
 
@@ -61,8 +60,6 @@ pub struct App {
     last_layout: Option<layout::LayoutResult>,
     /// Tile IDs in the order they appear in the grid (for mouse click mapping).
     last_filtered_ids: Vec<crate::tile::TileId>,
-    /// For double-click detection: (time, column, row).
-    last_click: Option<(std::time::Instant, u16, u16)>,
     /// Active text selection (drag in progress or completed).
     selection: Option<TextSelection>,
     /// Screen position where mouse was pressed (to distinguish click from drag).
@@ -95,7 +92,6 @@ impl App {
             should_quit: false,
             last_layout: None,
             last_filtered_ids: Vec::new(),
-            last_click: None,
             selection: None,
             drag_origin: None,
             detail_scroll_offset: 0,
@@ -206,6 +202,7 @@ impl App {
                     columns,
                     &self.selection,
                     self.detail_scroll_offset,
+                    self.tile_manager.selected_id().is_some(),
                 );
                 actual_terminal_size = render_result.detail_terminal_size;
             })?;
@@ -271,54 +268,18 @@ impl App {
                     return;
                 }
 
-                // Handle keys that need App-level access in Normal mode
-                if self.mode == AppMode::Normal {
-                    use crossterm::event::KeyCode;
-                    match key.code {
-                        KeyCode::Char('1') => {
-                            self.columns = 1;
-                            return;
-                        }
-                        KeyCode::Char('2') => {
-                            self.columns = 2;
-                            return;
-                        }
-                        KeyCode::Char('3') => {
-                            self.columns = 3;
-                            return;
-                        }
-                        KeyCode::Char('n') => {
-                            // Create tile in current directory (skip project selector for MVP)
-                            let cwd = std::env::current_dir().unwrap_or_default();
-                            if let Ok(id) = self.spawn_tile(&cwd) {
-                                self.tile_manager.select(id);
-                            }
-                            return;
-                        }
-                        KeyCode::PageUp => {
-                            self.detail_scroll_offset += 10;
-                            return;
-                        }
-                        KeyCode::PageDown => {
-                            self.detail_scroll_offset =
-                                self.detail_scroll_offset.saturating_sub(10);
-                            return;
-                        }
-                        _ => {}
-                    }
+                // Overlay mode: delegate to input handler for confirmations/dismissals
+                if matches!(self.mode, AppMode::Overlay(_)) {
+                    input::handle_overlay_key(key, &mut self.mode, &mut self.tile_manager);
+                    return;
                 }
 
-                let tab_entries = self.compute_tab_entries();
-                let result = input::handle_key(
-                    key,
-                    &mut self.mode,
-                    &mut self.tile_manager,
-                    &mut self.active_tab,
-                    &tab_entries,
-                    self.columns,
-                );
-                if matches!(result, input::InputResult::Quit) {
-                    self.should_quit = true;
+                // Normal mode: forward all keys to the selected PTY
+                let bytes = input::key_event_to_bytes(&key);
+                if !bytes.is_empty() {
+                    if let Some(tile) = self.tile_manager.selected_mut() {
+                        let _ = tile.write_input(&bytes);
+                    }
                 }
             }
             AppEvent::Crossterm(CEvent::Mouse(mouse)) => {
@@ -341,17 +302,13 @@ impl App {
                 } else {
                     tracing::debug!("PtyOutput for unknown tile {:?}", tile_id);
                 }
-                // Reset scroll when active tile produces output
-                if selected_id == Some(tile_id) {
-                    self.detail_scroll_offset = 0;
-                }
+                // When user has scrolled back, keep their position (scroll lock).
+                // Only auto-follow when already at bottom (offset == 0).
+                // Switching tiles resets scroll separately in handle_click.
             }
             AppEvent::PtyExited(tile_id) => {
                 tracing::info!("PTY exited for tile {}", tile_id.0);
                 self.tile_manager.remove(tile_id);
-                if self.mode == AppMode::Insert && self.tile_manager.selected_id().is_none() {
-                    self.mode = AppMode::Normal;
-                }
             }
             AppEvent::CwdChanged(tile_id, new_cwd) => {
                 if let Some(tile) = self.tile_manager.get_mut(tile_id) {
@@ -372,9 +329,6 @@ impl App {
                 for id in exited {
                     tracing::info!("Auto-removing exited tile {}", id.0);
                     self.tile_manager.remove(id);
-                }
-                if self.mode == AppMode::Insert && self.tile_manager.selected_id().is_none() {
-                    self.mode = AppMode::Normal;
                 }
             }
         }
@@ -485,21 +439,73 @@ impl App {
             None => return,
         };
 
-        let now = std::time::Instant::now();
+        // Tab bar buttons (right side): " [+] [X] "
+        // [X] is rightmost (5 chars), [+] is left of [X] (5 chars)
+        if y >= layout.tab_bar.y && y < layout.tab_bar.y + 1 {
+            let bar_right = layout.tab_bar.x + layout.tab_bar.width;
+            // [X] quit button
+            let x_btn_start = bar_right.saturating_sub(5);
+            if x >= x_btn_start && x < bar_right {
+                self.should_quit = true;
+                return;
+            }
+            // [+] new tile button
+            let plus_btn_start = x_btn_start.saturating_sub(5);
+            if x >= plus_btn_start && x < x_btn_start {
+                let cwd = std::env::current_dir().unwrap_or_default();
+                if let Ok(id) = self.spawn_tile(&cwd) {
+                    self.tile_manager.select(id);
+                }
+                return;
+            }
+        }
 
-        // Detect double-click: same position within 400ms
-        let is_double_click = self
-            .last_click
-            .map(|(t, lx, ly)| now.duration_since(t).as_millis() < 400 && lx == x && ly == y)
-            .unwrap_or(false);
-
-        self.last_click = Some((now, x, y));
-
-        // Click on tab bar?
+        // Click on tab bar (but not the buttons)?
         if y >= layout.tab_bar.y && y < layout.tab_bar.y + layout.tab_bar.height {
             let tab_entries = self.compute_tab_entries();
             self.active_tab = tab::next_tab(&self.active_tab, &tab_entries);
             return;
+        }
+
+        // Status bar buttons (right side): " [?] [×] [Ncol] "
+        // From right: [Ncol]=7, [×]=5, [?]=5
+        if y >= layout.status_bar.y
+            && y < layout.status_bar.y + layout.status_bar.height
+        {
+            let bar_right = layout.status_bar.x + layout.status_bar.width;
+            // [Ncol] column toggle
+            let col_btn_start = bar_right.saturating_sub(7);
+            if x >= col_btn_start && x < bar_right {
+                self.columns = match self.columns {
+                    1 => 2,
+                    2 => 3,
+                    _ => 1,
+                };
+                return;
+            }
+            // [×] close selected tile
+            let close_btn_start = col_btn_start.saturating_sub(5);
+            if x >= close_btn_start && x < col_btn_start {
+                if let Some(id) = self.tile_manager.selected_id() {
+                    let needs_confirm = self
+                        .tile_manager
+                        .get(id)
+                        .map(|t| t.status == crate::tile::TileStatus::Running)
+                        .unwrap_or(false);
+                    if needs_confirm {
+                        self.mode = AppMode::Overlay(OverlayKind::ConfirmClose(id));
+                    } else {
+                        self.tile_manager.remove(id);
+                    }
+                }
+                return;
+            }
+            // [?] help
+            let help_btn_start = close_btn_start.saturating_sub(5);
+            if x >= help_btn_start && x < close_btn_start {
+                self.mode = AppMode::Overlay(OverlayKind::Help);
+                return;
+            }
         }
 
         // Click on a tile card?
@@ -514,22 +520,14 @@ impl App {
                     if prev_selected != Some(tile_id) {
                         self.detail_scroll_offset = 0;
                     }
-                    if is_double_click {
-                        self.mode = AppMode::Insert; // double-click → Insert
-                    } else {
-                        self.mode = AppMode::Normal;
-                    }
                 }
                 return;
             }
         }
 
-        // Click on detail panel while in Normal → enter Insert
+        // Click on detail panel — no special action needed (keyboard already goes to selected PTY)
         if let Some(d) = layout.detail_panel {
             if x >= d.x && x < d.x + d.width && y >= d.y && y < d.y + d.height {
-                if is_double_click && self.tile_manager.selected_id().is_some() {
-                    self.mode = AppMode::Insert;
-                }
                 return;
             }
         }

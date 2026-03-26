@@ -18,7 +18,8 @@ Manage multiple terminal sessions in a single dashboard. Each tile automatically
 - **Git context awareness** — auto-detect project name, branch, worktree per tile
 - **Project grouping** — tab bar groups tiles by Git project, click to filter
 - **Detail panel** — select a tile to see full terminal output with colors
-- **Vim-like modes** — Normal (navigate), Insert (type), Overlay (dialogs)
+- **Mouse-driven UI** — all actions via clickable toolbar buttons, no modal switching
+- **Scroll lock** — detail panel stays in place when scrolled back, new output won't reset your position
 - **Session persistence** — auto-save/restore tile layout and scrollback history on restart
 - **Mouse support** — click to select tiles, drag to select text (auto-copy to clipboard)
 - **Full terminal emulation** — powered by [vt100](https://crates.io/crates/vt100), supports complex TUI apps
@@ -73,26 +74,31 @@ termgrid ~/projects     # Open a tile in the given directory
 termgrid --fresh        # Ignore saved session, start empty
 ```
 
-### Keyboard Shortcuts
+### Mouse-driven UI
 
-| Action | Normal Mode | Insert Mode |
-|--------|------------|-------------|
-| Navigate tiles | `hjkl` / Arrow keys | - |
-| Enter terminal | `i` / `Enter` | - |
-| Exit terminal | - | `Esc` |
-| New tile | `n` | - |
-| Close tile | `x` | - |
-| Switch columns | `1` / `2` / `3` | - |
-| Switch project tab | `Tab` / `Shift+Tab` | - |
-| Help | `?` | - |
-| Quit | `q` | - |
+All actions are performed via toolbar buttons — no keyboard shortcuts needed in the main interface. Click a tile to select it, and your keyboard input goes directly to that terminal.
 
-### Mouse
+#### Top bar (tab bar)
 
-- **Click** tile card to select
-- **Double-click** to enter Insert mode
+| Button | Action |
+|--------|--------|
+| Tab labels | Click to switch project filter |
+| `[+]` | New tile |
+| `[X]` | Quit app |
+
+#### Bottom bar (status bar)
+
+| Button | Action |
+|--------|--------|
+| `[?]` | Show help |
+| `[×]` | Close selected tile |
+| `[Ncol]` | Cycle columns (1 → 2 → 3 → 1) |
+
+#### Mouse actions
+
+- **Click** tile card to select — keyboard input goes to that terminal
 - **Drag** in detail panel to select text (auto-copies to clipboard on release)
-- **Scroll** to navigate grid
+- **Scroll wheel** on grid to navigate tiles, on detail panel to scroll history
 
 ## Configuration
 
@@ -110,9 +116,6 @@ scan_depth = 2
 [terminal]
 shell = "/bin/zsh"
 cwd_poll_interval = 2        # seconds
-
-[keys]
-exit_insert = "ctrl-]"       # alternative Insert exit key
 ```
 
 ## Platform Support
@@ -125,7 +128,7 @@ exit_insert = "ctrl-]"       # alternative Insert exit key
 
 ```
 termgrid
-├── App          — state machine (Normal/Insert/Overlay modes)
+├── App          — event loop + mouse-driven state management
 ├── EventLoop    — tokio-driven, multiplexes PTY output + input + timers
 ├── TileManager  — tile lifecycle, selection, grid navigation
 │   └── Tile     — PTY process + vt100 terminal emulator + Git context

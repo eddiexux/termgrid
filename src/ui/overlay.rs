@@ -37,53 +37,54 @@ fn render_help(frame: &mut Frame, area: Rect) {
 
     let help_text = vec![
         Line::from(vec![Span::styled(
-            "  Navigation",
+            "  Mouse-only UI",
             Style::default().add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  h/j/k/l  ", Style::default().fg(Color::Cyan)),
-            Span::raw("Move selection"),
+            Span::styled("  Click tile   ", Style::default().fg(Color::Cyan)),
+            Span::raw("Select tile (keyboard goes to PTY)"),
         ]),
         Line::from(vec![
-            Span::styled("  Tab      ", Style::default().fg(Color::Cyan)),
-            Span::raw("Next tab"),
+            Span::styled("  Click tab    ", Style::default().fg(Color::Cyan)),
+            Span::raw("Switch tab"),
         ]),
         Line::from(vec![
-            Span::styled("  Shift+Tab", Style::default().fg(Color::Cyan)),
-            Span::raw("Previous tab"),
+            Span::styled("  Scroll wheel ", Style::default().fg(Color::Cyan)),
+            Span::raw("Scroll grid / detail panel"),
+        ]),
+        Line::from(vec![
+            Span::styled("  Drag         ", Style::default().fg(Color::Cyan)),
+            Span::raw("Select text (auto-copy)"),
         ]),
         Line::from(""),
         Line::from(vec![Span::styled(
-            "  Actions",
+            "  Toolbar buttons",
             Style::default().add_modifier(Modifier::BOLD),
         )]),
         Line::from(""),
         Line::from(vec![
-            Span::styled("  Enter    ", Style::default().fg(Color::Cyan)),
-            Span::raw("Focus selected tile"),
+            Span::styled("  [+]          ", Style::default().fg(Color::Green)),
+            Span::raw("New tile (top-right)"),
         ]),
         Line::from(vec![
-            Span::styled("  n        ", Style::default().fg(Color::Cyan)),
-            Span::raw("New tile"),
+            Span::styled("  [X]          ", Style::default().fg(Color::Red)),
+            Span::raw("Quit app (top-right)"),
         ]),
         Line::from(vec![
-            Span::styled("  x        ", Style::default().fg(Color::Cyan)),
-            Span::raw("Close tile"),
+            Span::styled("  [?]          ", Style::default().fg(Color::Yellow)),
+            Span::raw("This help (bottom-right)"),
         ]),
         Line::from(vec![
-            Span::styled("  +/-      ", Style::default().fg(Color::Cyan)),
-            Span::raw("Increase/decrease columns"),
+            Span::styled("  [\u{00d7}]          ", Style::default().fg(Color::Red)),
+            Span::raw("Close selected tile (bottom-right)"),
+        ]),
+        Line::from(vec![
+            Span::styled("  [Ncol]       ", Style::default().fg(Color::Cyan)),
+            Span::raw("Cycle columns (bottom-right)"),
         ]),
         Line::from(""),
-        Line::from(vec![
-            Span::styled("  ?        ", Style::default().fg(Color::Cyan)),
-            Span::raw("Toggle this help"),
-        ]),
-        Line::from(vec![
-            Span::styled("  q / Esc  ", Style::default().fg(Color::Cyan)),
-            Span::raw("Quit"),
-        ]),
+        Line::from("  Press any key to close this help."),
     ];
 
     let para = Paragraph::new(Text::from(help_text));
