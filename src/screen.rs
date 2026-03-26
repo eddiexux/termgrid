@@ -62,6 +62,8 @@ pub struct ScreenBuffer {
     saved_fg: Option<Color>,
     saved_bg: Option<Color>,
     saved_modifiers: Option<Modifier>,
+    /// Pending responses to write back to the PTY (e.g., cursor position reports).
+    pub pending_responses: Vec<Vec<u8>>,
 }
 
 impl ScreenBuffer {
@@ -86,6 +88,7 @@ impl ScreenBuffer {
             saved_fg: None,
             saved_bg: None,
             saved_modifiers: None,
+            pending_responses: Vec::new(),
         }
     }
 
@@ -679,6 +682,40 @@ impl vte::Perform for ScreenBuffer {
             let v = param_list.first().copied().unwrap_or(0) as usize;
             if v == 0 { default } else { v }
         };
+
+        // Respond to terminal queries (must write response back to PTY)
+        if intermediates.is_empty() {
+            match action {
+                'n' => {
+                    let mode = param_list.first().copied().unwrap_or(0);
+                    if mode == 6 {
+                        // DSR: cursor position report (1-indexed)
+                        let response = format!("\x1b[{};{}R", self.cursor.row + 1, self.cursor.col + 1);
+                        self.pending_responses.push(response.into_bytes());
+                        return;
+                    }
+                    if mode == 5 {
+                        // DSR: device status — report OK
+                        self.pending_responses.push(b"\x1b[0n".to_vec());
+                        return;
+                    }
+                }
+                'c' => {
+                    // Primary DA: ESC[c or ESC[0c
+                    let p = param_list.first().copied().unwrap_or(0);
+                    if p == 0 {
+                        self.pending_responses.push(b"\x1b[?62;22c".to_vec());
+                        return;
+                    }
+                }
+                _ => {}
+            }
+        }
+        if intermediates == b">" && action == 'c' {
+            // Secondary DA: ESC[>c or ESC[>0c
+            self.pending_responses.push(b"\x1b[>0;0;0c".to_vec());
+            return;
+        }
 
         // DEC private mode: ESC[?Nh or ESC[?Nl
         if intermediates == b"?" {

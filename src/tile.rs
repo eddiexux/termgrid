@@ -55,9 +55,14 @@ impl Tile {
     }
 
     /// Feed bytes into the VTE parser and update last_active.
+    /// Any pending terminal query responses (e.g. DSR, DA) are sent back to the PTY.
     pub fn process_output(&mut self, bytes: &[u8]) {
         self.vte.process(bytes);
         self.last_active = Instant::now();
+        // Send any pending responses back to the PTY
+        for response in self.vte.screen.pending_responses.drain(..) {
+            let _ = self.pty.write(&response);
+        }
     }
 
     /// Update cwd; if it changed, re-detect git context.
@@ -127,6 +132,39 @@ mod tests {
         vte.process(b"hello");
         // cursor moved 5 columns right
         assert_eq!(vte.screen.cursor.col, 5);
+    }
+
+    #[test]
+    fn test_dsr_cursor_position_report() {
+        let mut vte = VteState::new(80, 24);
+        vte.process(b"\x1b[5;10H"); // move cursor to row 5, col 10 (1-indexed)
+        vte.process(b"\x1b[6n");     // request cursor position
+        assert_eq!(vte.screen.pending_responses.len(), 1);
+        assert_eq!(vte.screen.pending_responses[0], b"\x1b[5;10R");
+    }
+
+    #[test]
+    fn test_dsr_device_status_report() {
+        let mut vte = VteState::new(80, 24);
+        vte.process(b"\x1b[5n"); // request device status
+        assert_eq!(vte.screen.pending_responses.len(), 1);
+        assert_eq!(vte.screen.pending_responses[0], b"\x1b[0n");
+    }
+
+    #[test]
+    fn test_primary_da() {
+        let mut vte = VteState::new(80, 24);
+        vte.process(b"\x1b[c");
+        assert_eq!(vte.screen.pending_responses.len(), 1);
+        assert!(vte.screen.pending_responses[0].starts_with(b"\x1b[?"));
+    }
+
+    #[test]
+    fn test_secondary_da() {
+        let mut vte = VteState::new(80, 24);
+        vte.process(b"\x1b[>c");
+        assert_eq!(vte.screen.pending_responses.len(), 1);
+        assert_eq!(vte.screen.pending_responses[0], b"\x1b[>0;0;0c");
     }
 
     #[test]

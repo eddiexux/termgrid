@@ -1,7 +1,7 @@
 use crate::tile::Tile;
 use ratatui::{
     layout::{Constraint, Direction, Layout, Rect},
-    style::{Color, Modifier, Style},
+    style::{Color, Style},
     symbols,
     text::{Line, Span, Text},
     widgets::{Block, Borders, Paragraph},
@@ -9,7 +9,7 @@ use ratatui::{
 };
 
 /// Render the detail panel. Returns cursor screen position if cursor should be shown.
-pub fn render(frame: &mut Frame, area: Rect, tile: &Tile) -> Option<(u16, u16)> {
+pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&str>) -> Option<(u16, u16)> {
     // Render the outer block with left border as vertical separator
     let block = Block::default()
         .borders(Borders::LEFT)
@@ -24,7 +24,7 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile) -> Option<(u16, u16)> 
     }
 
     // Split: header lines + separator + terminal area
-    let header_height = 3u16; // project line + path/branch line + separator
+    let header_height = 3u16; // title line + path line + separator
     if inner.height <= header_height {
         return None;
     }
@@ -43,36 +43,8 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile) -> Option<(u16, u16)> 
     // Build header
     let mut header_lines: Vec<Line> = Vec::new();
 
-    // Line 1: project name + hints
-    let mut project_spans = Vec::new();
-    if let Some(ref git_ctx) = tile.git_context {
-        project_spans.push(Span::styled(
-            git_ctx.project_name.clone(),
-            Style::default()
-                .fg(Color::White)
-                .add_modifier(Modifier::BOLD),
-        ));
-        if let Some(ref branch) = git_ctx.branch {
-            project_spans.push(Span::styled(
-                format!("  ⑂ {}", branch),
-                Style::default().fg(Color::Blue),
-            ));
-        }
-        if git_ctx.is_worktree {
-            if let Some(ref wt_name) = git_ctx.worktree_name {
-                project_spans.push(Span::styled(
-                    format!("  ⑃ {}", wt_name),
-                    Style::default().fg(Color::Magenta),
-                ));
-            }
-        }
-    } else {
-        project_spans.push(Span::styled(
-            "(no project)",
-            Style::default().fg(Color::DarkGray),
-        ));
-    }
-    header_lines.push(Line::from(project_spans));
+    // Line 1: unified title (same format as tile card)
+    header_lines.push(super::title::build_title_line(tile, index_label));
 
     // Line 2: path
     let path_str = tile.cwd.display().to_string();

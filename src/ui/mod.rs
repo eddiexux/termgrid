@@ -3,6 +3,7 @@ pub mod overlay;
 pub mod status_bar;
 pub mod tab_bar;
 pub mod tile_card;
+pub mod title;
 
 use crate::app::AppMode;
 use crate::layout::LayoutResult;
@@ -71,7 +72,13 @@ pub fn render(
     // Render detail panel if selected, get cursor from it
     let mut cursor_pos = None;
     if let (Some(detail_area), Some(tile)) = (layout.detail_panel, tile_manager.selected()) {
-        cursor_pos = detail_panel::render(frame, detail_area, tile);
+        // Find index_label for the selected tile
+        let selected_label = selected_id.and_then(|sid| {
+            filtered.iter().position(|t| t.id == sid)
+                .and_then(|i| index_labels.get(i))
+                .and_then(|l| l.as_deref())
+        });
+        cursor_pos = detail_panel::render(frame, detail_area, tile, selected_label);
     }
 
     // If no detail panel, use tile card cursor
