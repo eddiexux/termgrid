@@ -55,17 +55,36 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool) -> 
         let end_row = (cursor_row + 1).min(total_visible);
         let start_row = end_row.saturating_sub(preview_height);
 
+        let cursor = &screen.cursor;
+        let cursor_visible = cursor.visible;
+        let cursor_grid_row = cursor.row;
+        let cursor_grid_col = cursor.col;
+
         let text_lines: Vec<Line> = visible[start_row..end_row]
             .iter()
-            .map(|row| {
+            .enumerate()
+            .map(|(line_idx, row)| {
+                let grid_row = start_row + line_idx;
                 let spans: Vec<Span> = row
                     .iter()
                     .take(preview_width)
-                    .map(|cell| {
-                        let style = Style::default()
-                            .fg(cell.fg)
-                            .bg(cell.bg)
-                            .add_modifier(cell.modifiers);
+                    .enumerate()
+                    .map(|(col_idx, cell)| {
+                        let is_cursor = cursor_visible
+                            && grid_row == cursor_grid_row
+                            && col_idx == cursor_grid_col;
+                        let style = if is_cursor {
+                            // Visual cursor: reversed colors
+                            Style::default()
+                                .fg(cell.bg)
+                                .bg(Color::White)
+                                .add_modifier(Modifier::BOLD)
+                        } else {
+                            Style::default()
+                                .fg(cell.fg)
+                                .bg(cell.bg)
+                                .add_modifier(cell.modifiers)
+                        };
                         Span::styled(cell.ch.to_string(), style)
                     })
                     .collect();
