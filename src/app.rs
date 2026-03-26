@@ -269,6 +269,13 @@ impl App {
                     tracing::debug!("PtyOutput for unknown tile {:?}", tile_id);
                 }
             }
+            AppEvent::PtyExited(tile_id) => {
+                tracing::info!("PTY exited for tile {}", tile_id.0);
+                self.tile_manager.remove(tile_id);
+                if self.mode == AppMode::Insert && self.tile_manager.selected_id().is_none() {
+                    self.mode = AppMode::Normal;
+                }
+            }
             AppEvent::CwdChanged(tile_id, new_cwd) => {
                 if let Some(tile) = self.tile_manager.get_mut(tile_id) {
                     tile.update_cwd(new_cwd);
@@ -276,6 +283,19 @@ impl App {
             }
             AppEvent::Tick => {
                 self.poll_tile_states();
+                // Auto-remove any tiles whose PTY has exited (fallback for cases not caught by PtyExited)
+                let exited: Vec<TileId> = self.tile_manager.tiles()
+                    .iter()
+                    .filter(|t| matches!(t.status, crate::tile::TileStatus::Exited))
+                    .map(|t| t.id)
+                    .collect();
+                for id in exited {
+                    tracing::info!("Auto-removing exited tile {}", id.0);
+                    self.tile_manager.remove(id);
+                }
+                if self.mode == AppMode::Insert && self.tile_manager.selected_id().is_none() {
+                    self.mode = AppMode::Normal;
+                }
             }
         }
     }
@@ -480,6 +500,7 @@ async fn pty_reader_task(
                 // EOF
                 tracing::debug!("PTY reader EOF for tile {}", tile_id.0);
                 let _ = r; // drop reader
+                let _ = tx.send(AppEvent::PtyExited(tile_id)).await;
                 break;
             }
             Ok((r, buf, Ok(n))) => {

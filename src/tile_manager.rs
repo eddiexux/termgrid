@@ -92,12 +92,26 @@ impl TileManager {
         self.selected = None;
     }
 
-    /// Return tiles matching the given filter in their stored order.
+    /// Return tiles matching the given filter, grouped by project name.
+    /// Within a project group, tiles are ordered by creation order (tile ID).
+    /// Non-git tiles are placed after all project tiles.
     pub fn filtered_tiles(&self, filter: &TabFilter) -> Vec<&Tile> {
-        self.tiles
+        let mut filtered: Vec<&Tile> = self.tiles
             .iter()
             .filter(|t| filter.matches(&t.git_context))
-            .collect()
+            .collect();
+        filtered.sort_by(|a, b| {
+            let key_a = Self::group_key(a);
+            let key_b = Self::group_key(b);
+            key_a.cmp(&key_b).then(a.id.0.cmp(&b.id.0))
+        });
+        filtered
+    }
+
+    fn group_key(tile: &Tile) -> String {
+        tile.git_context.as_ref()
+            .map(|g| format!("0:{}", g.project_name))
+            .unwrap_or_else(|| format!("1:{}", tile.cwd.display()))
     }
 
     pub fn tiles(&self) -> &[Tile] {
@@ -115,9 +129,8 @@ impl TileManager {
     /// Select the next tile in the filtered list, cycling around.
     pub fn select_next(&mut self, filter: &TabFilter) {
         let filtered: Vec<TileId> = self
-            .tiles
+            .filtered_tiles(filter)
             .iter()
-            .filter(|t| filter.matches(&t.git_context))
             .map(|t| t.id)
             .collect();
 
@@ -141,9 +154,8 @@ impl TileManager {
     /// Select the previous tile in the filtered list, cycling around.
     pub fn select_prev(&mut self, filter: &TabFilter) {
         let filtered: Vec<TileId> = self
-            .tiles
+            .filtered_tiles(filter)
             .iter()
-            .filter(|t| filter.matches(&t.git_context))
             .map(|t| t.id)
             .collect();
 
@@ -174,9 +186,8 @@ impl TileManager {
         }
 
         let filtered: Vec<TileId> = self
-            .tiles
+            .filtered_tiles(filter)
             .iter()
-            .filter(|t| filter.matches(&t.git_context))
             .map(|t| t.id)
             .collect();
 
