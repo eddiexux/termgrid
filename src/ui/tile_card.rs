@@ -66,8 +66,10 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool, ind
                 let spans: Vec<Span> = row_cells
                     .iter()
                     .enumerate()
-                    .filter(|(_, cell)| !cell.is_wide_continuation)
-                    .map(|(col_idx, cell)| {
+                    .filter_map(|(col_idx, cell)| {
+                        if cell.is_wide_continuation {
+                            return None; // skip, but col_idx still tracks the real column
+                        }
                         let is_cursor = cursor_visible
                             && grid_row == cursor_row as usize
                             && col_idx == cursor_col as usize;
@@ -82,7 +84,7 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool, ind
                                 .bg(cell.bg)
                                 .add_modifier(cell.modifiers)
                         };
-                        Span::styled(cell.ch.to_string(), style)
+                        Some(Span::styled(cell.ch.to_string(), style))
                     })
                     .collect();
                 let _ = display_idx;
