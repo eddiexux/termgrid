@@ -27,6 +27,17 @@ Manage multiple terminal sessions in a single dashboard. Each tile automatically
 
 ## Installation
 
+### Homebrew (macOS)
+
+```bash
+brew tap eddiexux/tap
+brew install termgrid
+```
+
+> **Note:** You need to create a `homebrew-tap` repo on GitHub first and publish
+> the formula from `packaging/homebrew/termgrid.rb` to `Formula/termgrid.rb` in
+> that repo.
+
 ### From crates.io
 
 ```bash

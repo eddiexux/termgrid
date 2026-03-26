@@ -69,12 +69,20 @@ pub struct App {
     drag_origin: Option<(u16, u16)>,
     /// How many rows the detail panel is scrolled back into history (0 = follow cursor).
     detail_scroll_offset: usize,
+    /// Path to the config file, used for hot reload detection.
+    config_path: std::path::PathBuf,
+    /// Last known modification time of the config file.
+    config_last_modified: Option<std::time::SystemTime>,
 }
 
 impl App {
     pub fn new(config: Config) -> Self {
         let (event_tx, event_rx) = mpsc::channel(256);
         let columns = config.layout.default_columns.clamp(1, 3);
+        let config_path = Config::config_path();
+        let config_last_modified = std::fs::metadata(&config_path)
+            .and_then(|m| m.modified())
+            .ok();
         App {
             config,
             tile_manager: TileManager::new(),
@@ -91,6 +99,8 @@ impl App {
             selection: None,
             drag_origin: None,
             detail_scroll_offset: 0,
+            config_path,
+            config_last_modified,
         }
     }
 
@@ -338,6 +348,7 @@ impl App {
                 }
             }
             AppEvent::Tick => {
+                self.check_config_reload();
                 self.poll_tile_states();
                 // Auto-remove any tiles whose PTY has exited (fallback for cases not caught by PtyExited)
                 let exited: Vec<TileId> = self
@@ -592,6 +603,22 @@ impl App {
             .map(|t| t.git_context.clone())
             .collect();
         tab::aggregate_tabs(&contexts)
+    }
+
+    fn check_config_reload(&mut self) {
+        let current_mtime = std::fs::metadata(&self.config_path)
+            .and_then(|m| m.modified())
+            .ok();
+
+        if current_mtime != self.config_last_modified && current_mtime.is_some() {
+            self.config_last_modified = current_mtime;
+            let new_config = Config::load(&self.config_path);
+            // Apply hot-reloadable settings.
+            // columns and detail_panel_width can change live;
+            // shell/cwd_poll_interval require a restart to take effect.
+            tracing::info!("Config reloaded from {:?}", self.config_path);
+            self.config = new_config;
+        }
     }
 
     fn poll_tile_states(&mut self) {

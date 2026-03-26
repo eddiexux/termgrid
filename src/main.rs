@@ -97,8 +97,11 @@ async fn main() -> anyhow::Result<()> {
         .iter()
         .enumerate()
         .map(|(i, t)| {
-            // Save scrollback content
-            let scrollback_data = t.vte.contents_formatted();
+            // Save full raw output history for scrollback restore.
+            // This captures all PTY output (up to 256 KB), not just the
+            // visible screen — replaying it through the VTE on restore
+            // reconstructs the complete scrollback buffer.
+            let scrollback_data = t.output_history();
             let scrollback_index = if !scrollback_data.is_empty() {
                 let _ = Session::save_scrollback(i, &scrollback_data);
                 Some(i)

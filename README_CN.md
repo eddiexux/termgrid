@@ -27,6 +27,16 @@
 
 ## 安装
 
+### Homebrew（macOS）
+
+```bash
+brew tap eddiexux/tap
+brew install termgrid
+```
+
+> **注意：** 需要先在 GitHub 创建 `homebrew-tap` 仓库，并将 `packaging/homebrew/termgrid.rb`
+> 发布到该仓库的 `Formula/termgrid.rb`。
+
 ### 从 crates.io 安装
 
 ```bash

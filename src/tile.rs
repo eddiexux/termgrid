@@ -1,6 +1,7 @@
 use crate::git::{detect_git, GitContext};
 use crate::pty::{PtyHandle, PtyReader};
 use crate::screen::VteState;
+use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
@@ -27,6 +28,10 @@ pub struct Tile {
     pub waiting_since: Option<Instant>,
     /// True when new PTY output arrived while this tile was not selected.
     pub has_unread: bool,
+    /// Ring buffer of raw PTY output for full history persistence.
+    output_history: VecDeque<u8>,
+    /// Maximum bytes to keep in output history (256 KB per tile).
+    max_history_bytes: usize,
 }
 
 impl Tile {
@@ -53,6 +58,8 @@ impl Tile {
             last_active: Instant::now(),
             waiting_since: None,
             has_unread: false,
+            output_history: VecDeque::new(),
+            max_history_bytes: 256 * 1024,
         };
 
         Ok((tile, reader))
@@ -63,6 +70,21 @@ impl Tile {
         tracing::trace!("Tile {} received {} bytes", self.id.0, bytes.len());
         self.vte.process(bytes);
         self.last_active = Instant::now();
+        // Store raw output in ring buffer for full history persistence.
+        for &b in bytes {
+            if self.output_history.len() >= self.max_history_bytes {
+                self.output_history.pop_front();
+            }
+            self.output_history.push_back(b);
+        }
+    }
+
+    /// Return all buffered raw PTY output as a contiguous Vec.
+    ///
+    /// On session restore, replaying these bytes through the VTE emulator
+    /// reconstructs the full scrollback (up to 256 KB per tile).
+    pub fn output_history(&self) -> Vec<u8> {
+        self.output_history.iter().copied().collect()
     }
 
     /// Update cwd; if it changed, re-detect git context.
@@ -198,5 +220,34 @@ mod tests {
         tile.resize(120, 40).unwrap();
         assert_eq!(tile.vte.cols(), 120);
         assert_eq!(tile.vte.rows(), 40);
+    }
+
+    #[test]
+    fn test_output_history_accumulates() {
+        let id = TileId(6);
+        let dir = std::env::current_dir().unwrap();
+        let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+
+        assert!(tile.output_history().is_empty());
+
+        tile.process_output(b"hello");
+        tile.process_output(b" world");
+        let history = tile.output_history();
+        assert_eq!(history, b"hello world");
+    }
+
+    #[test]
+    fn test_output_history_ring_buffer_eviction() {
+        let id = TileId(7);
+        let dir = std::env::current_dir().unwrap();
+        let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
+
+        // Fill to capacity + 5 bytes
+        let capacity = tile.max_history_bytes;
+        let chunk = vec![0u8; capacity + 5];
+        tile.process_output(&chunk);
+
+        // History must not exceed max capacity
+        assert_eq!(tile.output_history().len(), capacity);
     }
 }
