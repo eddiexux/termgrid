@@ -14,7 +14,7 @@ use crossterm::event::{Event as CEvent, EventStream, KeyEventKind};
 use crossterm::terminal::{
     disable_raw_mode, enable_raw_mode, EnterAlternateScreen, LeaveAlternateScreen,
 };
-use crossterm::{event::DisableMouseCapture, event::EnableMouseCapture, execute};
+use crossterm::execute;
 use futures::StreamExt;
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
@@ -55,8 +55,6 @@ pub struct App {
     last_filtered_ids: Vec<crate::tile::TileId>,
     /// For double-click detection: (time, column, row).
     last_click: Option<(std::time::Instant, u16, u16)>,
-    /// Whether mouse capture is enabled (can be toggled for text selection).
-    mouse_captured: bool,
 }
 
 impl App {
@@ -76,7 +74,6 @@ impl App {
             last_layout: None,
             last_filtered_ids: Vec::new(),
             last_click: None,
-            mouse_captured: false,
         }
     }
 
@@ -104,6 +101,12 @@ impl App {
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
+        // Enable mouse click tracking only (mode 1000 + SGR encoding 1006).
+        // NOT mode 1002/1003 (drag/movement) — those stay with the terminal
+        // so native text selection (click+drag) works alongside our click-to-select.
+        use std::io::Write;
+        stdout.write_all(b"\x1b[?1000h\x1b[?1006h")?;
+        stdout.flush()?;
         let backend = CrosstermBackend::new(std::io::stdout());
         let mut terminal = Terminal::new(backend)?;
 
@@ -131,7 +134,6 @@ impl App {
             let scroll_offset = self.scroll_offset;
             let detail_width = self.config.layout.detail_panel_width;
             let filtered_count = self.tile_manager.filtered_tiles(&self.active_tab).len();
-            let mouse_captured = self.mouse_captured;
 
             let filtered_ids: Vec<TileId> = self
                 .tile_manager
@@ -170,7 +172,6 @@ impl App {
                     &self.active_tab,
                     &self.mode,
                     columns,
-                    mouse_captured,
                 );
                 actual_terminal_size = render_result.detail_terminal_size;
             })?;
@@ -205,11 +206,14 @@ impl App {
 
         // Restore terminal
         disable_raw_mode()?;
-        execute!(
-            terminal.backend_mut(),
-            LeaveAlternateScreen,
-            DisableMouseCapture
-        )?;
+        // Disable mouse tracking
+        {
+            use std::io::Write;
+            let mut stdout = std::io::stdout();
+            stdout.write_all(b"\x1b[?1000l\x1b[?1006l")?;
+            stdout.flush()?;
+        }
+        execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
         terminal.show_cursor()?;
         tracing::info!("App stopped");
 
@@ -245,19 +249,6 @@ impl App {
                             let cwd = std::env::current_dir().unwrap_or_default();
                             if let Ok(id) = self.spawn_tile(&cwd) {
                                 self.tile_manager.select(id);
-                            }
-                            return;
-                        }
-                        KeyCode::Char('m') => {
-                            // Toggle mouse capture for text selection
-                            self.mouse_captured = !self.mouse_captured;
-                            let mut stdout = std::io::stdout();
-                            if self.mouse_captured {
-                                let _ = execute!(stdout, EnableMouseCapture);
-                                tracing::info!("Mouse capture enabled");
-                            } else {
-                                let _ = execute!(stdout, DisableMouseCapture);
-                                tracing::info!("Mouse capture disabled — use terminal native selection");
                             }
                             return;
                         }

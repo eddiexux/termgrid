@@ -27,7 +27,6 @@ pub fn render(
     active_tab: &TabFilter,
     mode: &AppMode,
     columns: u8,
-    mouse_captured: bool,
 ) -> RenderResult {
     tab_bar::render(
         frame,
@@ -113,7 +112,6 @@ pub fn render(
         mode,
         tile_manager.tile_count(),
         columns,
-        mouse_captured,
     );
 
     if let AppMode::Overlay(ref kind) = mode {
