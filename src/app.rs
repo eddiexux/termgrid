@@ -76,7 +76,7 @@ impl App {
             last_layout: None,
             last_filtered_ids: Vec::new(),
             last_click: None,
-            mouse_captured: true,
+            mouse_captured: false,
         }
     }
 
@@ -103,7 +103,7 @@ impl App {
         // Set up terminal
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
-        execute!(stdout, EnterAlternateScreen, EnableMouseCapture)?;
+        execute!(stdout, EnterAlternateScreen)?;
         let backend = CrosstermBackend::new(std::io::stdout());
         let mut terminal = Terminal::new(backend)?;
 
