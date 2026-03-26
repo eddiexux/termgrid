@@ -36,8 +36,9 @@ pub fn render(
         }
     }
 
+    let mut cursor_pos = None;
     if let (Some(detail_area), Some(tile)) = (layout.detail_panel, tile_manager.selected()) {
-        detail_panel::render(frame, detail_area, tile);
+        cursor_pos = detail_panel::render(frame, detail_area, tile);
     }
 
     status_bar::render(
@@ -51,5 +52,12 @@ pub fn render(
     if let AppMode::Overlay(ref kind) = mode {
         let total_area = frame.area();
         overlay::render(frame, total_area, kind);
+    }
+
+    // Show blinking cursor when in Insert mode
+    if matches!(mode, AppMode::Insert) {
+        if let Some((cx, cy)) = cursor_pos {
+            frame.set_cursor_position(ratatui::layout::Position::new(cx, cy));
+        }
     }
 }

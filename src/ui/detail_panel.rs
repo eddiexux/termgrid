@@ -8,7 +8,8 @@ use ratatui::{
     Frame,
 };
 
-pub fn render(frame: &mut Frame, area: Rect, tile: &Tile) {
+/// Render the detail panel. Returns cursor screen position if cursor should be shown.
+pub fn render(frame: &mut Frame, area: Rect, tile: &Tile) -> Option<(u16, u16)> {
     // Render the outer block with left border as vertical separator
     let block = Block::default()
         .borders(Borders::LEFT)
@@ -19,13 +20,13 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile) {
     frame.render_widget(block, area);
 
     if inner.height == 0 || inner.width == 0 {
-        return;
+        return None;
     }
 
     // Split: header lines + separator + terminal area
     let header_height = 3u16; // project line + path/branch line + separator
     if inner.height <= header_height {
-        return;
+        return None;
     }
 
     let chunks = Layout::default()
@@ -90,13 +91,17 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile) {
     let header_para = Paragraph::new(Text::from(header_lines));
     frame.render_widget(header_para, header_area);
 
-    // Render full terminal area
+    // Render full terminal area and compute cursor position
+    let mut cursor_pos = None;
     if terminal_area.height > 0 {
         let rows = terminal_area.height as usize;
         let cols = terminal_area.width as usize;
-        let lines = tile.vte.screen.last_n_lines(rows);
+        let screen = &tile.vte.screen;
+        let visible = screen.visible_lines();
+        let total_visible = visible.len();
+        let start_row = total_visible.saturating_sub(rows);
 
-        let text_lines: Vec<Line> = lines
+        let text_lines: Vec<Line> = visible[start_row..]
             .iter()
             .map(|row| {
                 let spans: Vec<Span> = row
@@ -116,5 +121,19 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile) {
 
         let terminal_para = Paragraph::new(Text::from(text_lines));
         frame.render_widget(terminal_para, terminal_area);
+
+        // Compute cursor screen position
+        let cursor = &screen.cursor;
+        if cursor.visible && cursor.row >= start_row {
+            let screen_row = (cursor.row - start_row) as u16;
+            let screen_col = cursor.col as u16;
+            if screen_row < terminal_area.height && screen_col < terminal_area.width {
+                cursor_pos = Some((
+                    terminal_area.x + screen_col,
+                    terminal_area.y + screen_row,
+                ));
+            }
+        }
     }
+    cursor_pos
 }

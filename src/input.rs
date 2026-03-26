@@ -111,12 +111,12 @@ fn handle_insert_key(
     mode: &mut AppMode,
     tile_manager: &mut TileManager,
 ) -> InputResult {
-    // Ctrl+] → back to Normal mode
-    // crossterm may report this as Char(']')+CONTROL or as raw Char('\x1d') (ASCII 29)
-    let is_ctrl_bracket = (key.modifiers.contains(KeyModifiers::CONTROL)
-        && key.code == KeyCode::Char(']'))
+    // Esc → back to Normal mode
+    // Also support Ctrl+] (reported as Char(']')+CONTROL or raw Char('\x1d'))
+    let is_exit = key.code == KeyCode::Esc
+        || (key.modifiers.contains(KeyModifiers::CONTROL) && key.code == KeyCode::Char(']'))
         || key.code == KeyCode::Char('\x1d');
-    if is_ctrl_bracket {
+    if is_exit {
         *mode = AppMode::Normal;
         return InputResult::Continue;
     }
