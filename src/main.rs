@@ -12,9 +12,9 @@ struct Cli {
     #[arg()]
     path: Option<PathBuf>,
 
-    /// Restore last session
+    /// Start fresh (ignore saved session)
     #[arg(long)]
-    restore: bool,
+    fresh: bool,
 }
 
 #[tokio::main]
@@ -23,23 +23,27 @@ async fn main() -> anyhow::Result<()> {
     let config = Config::load(&Config::config_path());
     let mut app = App::new(config);
 
-    if cli.restore {
+    if let Some(path) = cli.path {
+        // Explicit path: open tile there
+        if path.exists() {
+            app.spawn_tile(&path)?;
+        }
+    } else if !cli.fresh {
+        // No path, no --fresh: auto-restore last session
         if let Some(session) = Session::load(&Session::session_path()) {
             for tile_session in &session.tiles {
                 if tile_session.cwd.exists() {
                     let _ = app.spawn_tile(&tile_session.cwd);
                 }
             }
-        }
-    } else if let Some(path) = cli.path {
-        if path.exists() {
-            app.spawn_tile(&path)?;
+            app.set_columns(session.columns);
         }
     }
+    // --fresh or no session: empty dashboard, press 'n' to create
 
     app.run().await?;
 
-    // Save session on exit
+    // Save session on exit (capture tile CWDs before they're dropped)
     let session = Session {
         tiles: app
             .tile_manager_ref()

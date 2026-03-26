@@ -430,6 +430,10 @@ impl App {
     pub fn columns(&self) -> u8 {
         self.columns
     }
+
+    pub fn set_columns(&mut self, columns: u8) {
+        self.columns = columns.clamp(1, 3);
+    }
 }
 
 async fn pty_reader_task(

@@ -9,6 +9,7 @@ use crate::layout::LayoutResult;
 use crate::tab::{TabEntry, TabFilter};
 use crate::tile_manager::TileManager;
 use ratatui::Frame;
+use std::collections::HashMap;
 
 pub fn render(
     frame: &mut Frame,
@@ -30,12 +31,37 @@ pub fn render(
     let filtered = tile_manager.filtered_tiles(active_tab);
     let selected_id = tile_manager.selected_id();
 
+    // Compute index labels for tiles sharing the same project name.
+    // Only add labels when there are duplicates (e.g. "[1]", "[2]").
+    let mut project_counts: HashMap<String, usize> = HashMap::new();
+    for tile in &filtered {
+        let key = tile.git_context.as_ref()
+            .map(|g| g.project_name.clone())
+            .unwrap_or_else(|| tile.cwd.display().to_string());
+        *project_counts.entry(key).or_default() += 1;
+    }
+    let mut project_indices: HashMap<String, usize> = HashMap::new();
+    let index_labels: Vec<Option<String>> = filtered.iter().map(|tile| {
+        let key = tile.git_context.as_ref()
+            .map(|g| g.project_name.clone())
+            .unwrap_or_else(|| tile.cwd.display().to_string());
+        let count = project_counts.get(&key).copied().unwrap_or(1);
+        if count > 1 {
+            let idx = project_indices.entry(key).or_insert(0);
+            *idx += 1;
+            Some(format!("[{}]", *idx))
+        } else {
+            None
+        }
+    }).collect();
+
     // Render tile cards, collect cursor from selected tile's card
     let mut tile_card_cursor = None;
     for (i, rect) in layout.tile_rects.iter().enumerate() {
         if let Some(tile) = filtered.get(i) {
             let is_selected = selected_id == Some(tile.id);
-            let card_cursor = tile_card::render(frame, *rect, tile, is_selected);
+            let label = index_labels.get(i).and_then(|l| l.as_deref());
+            let card_cursor = tile_card::render(frame, *rect, tile, is_selected, label);
             if is_selected {
                 tile_card_cursor = card_cursor;
             }

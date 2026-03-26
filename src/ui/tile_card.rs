@@ -8,7 +8,8 @@ use ratatui::{
 };
 
 /// Render a tile card. Returns cursor screen position if the tile has a visible cursor.
-pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool) -> Option<(u16, u16)> {
+/// `index_label` is shown when multiple tiles share the same project/directory (e.g. "[2]").
+pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool, index_label: Option<&str>) -> Option<(u16, u16)> {
     let border_color = if is_selected {
         Color::Cyan
     } else {
@@ -36,7 +37,7 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool) -> 
     let preview_area = chunks[1];
 
     // Build title line
-    let title_line = build_title_line(tile);
+    let title_line = build_title_line(tile, index_label);
     let title_para = Paragraph::new(title_line);
     frame.render_widget(title_para, title_area);
 
@@ -56,7 +57,8 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool) -> 
         let start_row = end_row.saturating_sub(preview_height);
 
         let cursor = &screen.cursor;
-        let cursor_visible = cursor.visible;
+        // Only show visual cursor on the selected tile
+        let cursor_visible = is_selected && cursor.visible;
         let cursor_grid_row = cursor.row;
         let cursor_grid_col = cursor.col;
 
@@ -110,7 +112,7 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool) -> 
     cursor_pos
 }
 
-fn build_title_line(tile: &Tile) -> Line<'static> {
+fn build_title_line(tile: &Tile, index_label: Option<&str>) -> Line<'static> {
     let mut spans = Vec::new();
 
     // Status tag
@@ -125,6 +127,14 @@ fn build_title_line(tile: &Tile) -> Line<'static> {
         format!("[{}] ", status_label),
         Style::default().fg(status_color),
     ));
+
+    // Index label for disambiguation (e.g. "[2]")
+    if let Some(label) = index_label {
+        spans.push(Span::styled(
+            format!("{} ", label),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
 
     // Project name
     if let Some(ref git_ctx) = tile.git_context {
