@@ -11,16 +11,14 @@ fn test_vte_full_session_simulation() {
     vte.process(b"    \x1b[32mFinished\x1b[0m test target\r\n");
     vte.process(b"test result: \x1b[32mok\x1b[0m. 10 passed; 0 failed\r\n");
 
-    // Verify content is present
-    let screen = &vte.screen;
-    let line0: String = screen.visible_lines()[0]
-        .iter()
-        .map(|c| c.ch)
+    // Verify content is present on the first row
+    let line0: String = (0..vte.cols())
+        .map(|col| vte.cell_at(0, col).ch)
         .collect::<String>();
     assert!(line0.contains("user@host"));
 
-    // Verify color was applied
-    let first_char = &screen.visible_lines()[0][0]; // 'u' in 'user'
+    // Verify color was applied — 'u' in 'user' should be green
+    let first_char = vte.cell_at(0, 0);
     assert_eq!(first_char.fg, ratatui::style::Color::Green);
 }
 

@@ -38,7 +38,7 @@ impl Tile {
     ) -> anyhow::Result<(Self, PtyReader)> {
         let (pty, reader) = PtyHandle::spawn(shell, cwd, cols, rows)?;
         tracing::info!("Tile {} spawned, PID {:?}", id.0, pty.pid());
-        let vte = VteState::new(cols as usize, rows as usize);
+        let vte = VteState::new(cols, rows);
         let git_context = detect_git(cwd);
 
         let tile = Tile {
@@ -56,15 +56,10 @@ impl Tile {
     }
 
     /// Feed bytes into the VTE parser and update last_active.
-    /// Any pending terminal query responses (e.g. DSR, DA) are sent back to the PTY.
     pub fn process_output(&mut self, bytes: &[u8]) {
         tracing::trace!("Tile {} received {} bytes", self.id.0, bytes.len());
         self.vte.process(bytes);
         self.last_active = Instant::now();
-        // Send any pending responses back to the PTY
-        for response in self.vte.screen.pending_responses.drain(..) {
-            let _ = self.pty.write(&response);
-        }
     }
 
     /// Update cwd; if it changed, re-detect git context.
@@ -110,7 +105,7 @@ impl Tile {
     /// Resize the PTY and the screen buffer.
     pub fn resize(&mut self, cols: u16, rows: u16) -> anyhow::Result<()> {
         self.pty.resize(cols, rows)?;
-        self.vte.screen.resize(cols as usize, rows as usize);
+        self.vte.resize(cols, rows);
         Ok(())
     }
 }
@@ -134,40 +129,8 @@ mod tests {
         let mut vte = VteState::new(80, 24);
         vte.process(b"hello");
         // cursor moved 5 columns right
-        assert_eq!(vte.screen.cursor.col, 5);
-    }
-
-    #[test]
-    fn test_dsr_cursor_position_report() {
-        let mut vte = VteState::new(80, 24);
-        vte.process(b"\x1b[5;10H"); // move cursor to row 5, col 10 (1-indexed)
-        vte.process(b"\x1b[6n");     // request cursor position
-        assert_eq!(vte.screen.pending_responses.len(), 1);
-        assert_eq!(vte.screen.pending_responses[0], b"\x1b[5;10R");
-    }
-
-    #[test]
-    fn test_dsr_device_status_report() {
-        let mut vte = VteState::new(80, 24);
-        vte.process(b"\x1b[5n"); // request device status
-        assert_eq!(vte.screen.pending_responses.len(), 1);
-        assert_eq!(vte.screen.pending_responses[0], b"\x1b[0n");
-    }
-
-    #[test]
-    fn test_primary_da() {
-        let mut vte = VteState::new(80, 24);
-        vte.process(b"\x1b[c");
-        assert_eq!(vte.screen.pending_responses.len(), 1);
-        assert!(vte.screen.pending_responses[0].starts_with(b"\x1b[?"));
-    }
-
-    #[test]
-    fn test_secondary_da() {
-        let mut vte = VteState::new(80, 24);
-        vte.process(b"\x1b[>c");
-        assert_eq!(vte.screen.pending_responses.len(), 1);
-        assert_eq!(vte.screen.pending_responses[0], b"\x1b[>0;0;0c");
+        let (_, col) = vte.cursor_position();
+        assert_eq!(col, 5);
     }
 
     #[test]
@@ -181,7 +144,8 @@ mod tests {
         std::thread::sleep(std::time::Duration::from_millis(10));
         tile.process_output(b"hello");
         assert!(tile.last_active >= before);
-        assert_eq!(tile.vte.screen.cursor.col, 5);
+        let (_, col) = tile.vte.cursor_position();
+        assert_eq!(col, 5);
     }
 
     #[test]
@@ -229,7 +193,7 @@ mod tests {
         let (mut tile, _reader) = Tile::spawn(id, "/bin/sh", &dir, 80, 24).unwrap();
 
         tile.resize(120, 40).unwrap();
-        assert_eq!(tile.vte.screen.cols(), 120);
-        assert_eq!(tile.vte.screen.rows(), 40);
+        assert_eq!(tile.vte.cols(), 120);
+        assert_eq!(tile.vte.rows(), 40);
     }
 }

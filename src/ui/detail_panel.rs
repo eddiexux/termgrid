@@ -73,40 +73,41 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&s
     let mut cursor_pos = None;
     if terminal_area.height > 0 {
         let rows = terminal_area.height as usize;
-        let cols = terminal_area.width as usize;
-        let screen = &tile.vte.screen;
-        let visible = screen.visible_lines();
-        let total_visible = visible.len();
-        let cursor_row = screen.cursor.row.min(total_visible.saturating_sub(1));
+        let cols = terminal_area.width as u16;
+        let screen = &tile.vte;
+        let (cursor_row, cursor_col) = screen.cursor_position();
 
-        // Ensure cursor is within the visible window
-        let start_row = if total_visible <= rows {
-            0 // Everything fits
-        } else if cursor_row < rows {
-            0 // Cursor near top — show from top
-        } else {
-            // Cursor below the first screenful — scroll to keep cursor visible
-            (cursor_row + 1).saturating_sub(rows)
-        };
-        let end_row = (start_row + rows).min(total_visible);
+        let (start_row, row_cells) = screen.visible_rows_with_cursor(rows, cols);
 
-        let slice: Vec<&[crate::screen::Cell]> = visible[start_row..end_row]
+        let text_lines: Vec<Line> = row_cells
             .iter()
-            .map(|row| row.as_slice())
+            .map(|row| {
+                let spans: Vec<Span> = row
+                    .iter()
+                    .filter(|cell| !cell.is_wide_continuation)
+                    .map(|cell| {
+                        Span::styled(
+                            cell.ch.to_string(),
+                            Style::default()
+                                .fg(cell.fg)
+                                .bg(cell.bg)
+                                .add_modifier(cell.modifiers),
+                        )
+                    })
+                    .collect();
+                Line::from(spans)
+            })
             .collect();
-        let text_lines = super::screen_rows_to_lines(&slice, cols);
 
         let terminal_para = Paragraph::new(Text::from(text_lines));
         frame.render_widget(terminal_para, terminal_area);
 
         // Compute cursor screen position
-        let cursor = &screen.cursor;
-        if cursor.visible && cursor.row >= start_row {
-            let screen_row = (cursor.row - start_row) as u16;
-            let screen_col = cursor.col as u16;
-            if screen_row < terminal_area.height && screen_col < terminal_area.width {
+        if screen.cursor_visible() && cursor_row as usize >= start_row {
+            let screen_row = (cursor_row as usize - start_row) as u16;
+            if screen_row < terminal_area.height && cursor_col < terminal_area.width {
                 cursor_pos = Some((
-                    terminal_area.x + screen_col,
+                    terminal_area.x + cursor_col,
                     terminal_area.y + screen_row,
                 ));
             }

@@ -48,35 +48,30 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool, ind
     let mut cursor_pos = None;
     if preview_area.height > 0 {
         let preview_height = preview_area.height as usize;
-        let preview_width = preview_area.width as usize;
-        let screen = &tile.vte.screen;
-        let visible = screen.visible_lines();
-        let total_visible = visible.len();
-        let cursor_row = screen.cursor.row.min(total_visible.saturating_sub(1));
-        let end_row = (cursor_row + 1).min(total_visible);
+        let preview_width = preview_area.width as u16;
+        let screen = &tile.vte;
+        let (cursor_row, cursor_col) = screen.cursor_position();
+        let total_rows = screen.rows() as usize;
+
+        let end_row = (cursor_row as usize + 1).min(total_rows);
         let start_row = end_row.saturating_sub(preview_height);
 
-        let cursor = &screen.cursor;
         // Only show visual cursor on the selected tile
-        let cursor_visible = is_selected && cursor.visible;
-        let cursor_grid_row = cursor.row;
-        let cursor_grid_col = cursor.col;
+        let cursor_visible = is_selected && screen.cursor_visible();
 
-        let text_lines: Vec<Line> = visible[start_row..end_row]
-            .iter()
+        let text_lines: Vec<Line> = (start_row..end_row)
             .enumerate()
-            .map(|(line_idx, row)| {
-                let grid_row = start_row + line_idx;
-                let spans: Vec<Span> = row
+            .map(|(display_idx, grid_row)| {
+                let row_cells = screen.row_cells(grid_row as u16, preview_width);
+                let spans: Vec<Span> = row_cells
                     .iter()
-                    .take(preview_width)
                     .enumerate()
+                    .filter(|(_, cell)| !cell.is_wide_continuation)
                     .map(|(col_idx, cell)| {
                         let is_cursor = cursor_visible
-                            && grid_row == cursor_grid_row
-                            && col_idx == cursor_grid_col;
+                            && grid_row == cursor_row as usize
+                            && col_idx == cursor_col as usize;
                         let style = if is_cursor {
-                            // Visual cursor: reversed colors
                             Style::default()
                                 .fg(cell.bg)
                                 .bg(Color::White)
@@ -90,6 +85,7 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool, ind
                         Span::styled(cell.ch.to_string(), style)
                     })
                     .collect();
+                let _ = display_idx;
                 Line::from(spans)
             })
             .collect();
@@ -98,12 +94,11 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool, ind
         frame.render_widget(preview_para, preview_area);
 
         // Compute cursor position in the preview area
-        let cursor = &screen.cursor;
-        if cursor.visible && cursor.row >= start_row && cursor.col < preview_width {
-            let screen_row = (cursor.row - start_row) as u16;
+        if screen.cursor_visible() && cursor_row as usize >= start_row && cursor_col < preview_width {
+            let screen_row = (cursor_row as usize - start_row) as u16;
             if screen_row < preview_area.height {
                 cursor_pos = Some((
-                    preview_area.x + cursor.col as u16,
+                    preview_area.x + cursor_col,
                     preview_area.y + screen_row,
                 ));
             }
@@ -111,4 +106,3 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool, ind
     }
     cursor_pos
 }
-

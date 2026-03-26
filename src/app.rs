@@ -473,8 +473,7 @@ impl App {
     /// Only resizes tiles whose current screen dimensions differ.
     fn sync_pty_sizes(&mut self, cols: u16, rows: u16) {
         for tile in self.tile_manager.tiles_mut() {
-            let screen = &tile.vte.screen;
-            if screen.cols() != cols as usize || screen.rows() != rows as usize {
+            if tile.vte.cols() != cols || tile.vte.rows() != rows {
                 tracing::debug!("Resizing tile {} PTY to {}x{}", tile.id.0, cols, rows);
                 let _ = tile.resize(cols, rows);
             }

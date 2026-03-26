@@ -297,7 +297,8 @@ mod tests {
         use crate::screen::VteState;
         let mut vte = VteState::new(80, 24);
         vte.process(b"hello");
-        assert_eq!(vte.screen.cursor.col, 5);
+        let (_, col) = vte.cursor_position();
+        assert_eq!(col, 5);
     }
 
     #[test]
