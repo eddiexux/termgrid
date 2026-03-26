@@ -101,9 +101,14 @@ impl App {
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
         execute!(stdout, EnterAlternateScreen)?;
-        // No mouse tracking — let terminal handle all mouse natively.
-        // Text selection, copy/paste work out of the box.
-        // Tile navigation is keyboard-only (hjkl/arrows, i, Esc).
+        // Enable click-only mouse tracking (mode 1000).
+        // Drag events (1002/1003) NOT enabled — terminal still handles text selection.
+        // Shift+drag for selection in terminals that need it.
+        {
+            use std::io::Write;
+            stdout.write_all(b"\x1b[?1000h\x1b[?1006h")?;
+            stdout.flush()?;
+        }
         let backend = CrosstermBackend::new(std::io::stdout());
         let mut terminal = Terminal::new(backend)?;
 
@@ -203,6 +208,12 @@ impl App {
 
         // Restore terminal
         disable_raw_mode()?;
+        {
+            use std::io::Write;
+            let mut stdout = std::io::stdout();
+            stdout.write_all(b"\x1b[?1000l\x1b[?1006l")?;
+            stdout.flush()?;
+        }
         execute!(terminal.backend_mut(), LeaveAlternateScreen)?;
         terminal.show_cursor()?;
         tracing::info!("App stopped");
