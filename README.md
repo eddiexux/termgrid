@@ -22,22 +22,22 @@ Manage multiple terminal sessions in a single dashboard. Each tile automatically
 
 ## Installation
 
-### From source
+### From crates.io
 
 ```bash
-cargo install --git https://github.com/eddiexux/termgrid.git
+cargo install termgrid
 ```
 
 ### Update to latest version
 
 ```bash
-cargo install --git https://github.com/eddiexux/termgrid.git --force
+cargo install termgrid --force
 ```
 
-### Install a specific version
+### From source (latest dev)
 
 ```bash
-cargo install --git https://github.com/eddiexux/termgrid.git --tag v0.1.0
+cargo install --git https://github.com/eddiexux/termgrid.git
 ```
 
 ### Build locally
