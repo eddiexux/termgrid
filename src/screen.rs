@@ -64,6 +64,9 @@ pub struct ScreenBuffer {
     saved_modifiers: Option<Modifier>,
     /// Pending responses to write back to the PTY (e.g., cursor position reports).
     pub pending_responses: Vec<Vec<u8>>,
+    /// Deferred wrap: true when the last character was placed at the rightmost column.
+    /// The actual wrap happens on the next `put_char` call.
+    pending_wrap: bool,
 }
 
 impl ScreenBuffer {
@@ -89,6 +92,7 @@ impl ScreenBuffer {
             saved_bg: None,
             saved_modifiers: None,
             pending_responses: Vec::new(),
+            pending_wrap: false,
         }
     }
 
@@ -127,10 +131,18 @@ impl ScreenBuffer {
     }
 
     /// Put a character at the current cursor position with the current style,
-    /// then advance the cursor. Wraps at the end of the line.
+    /// then advance the cursor. Uses deferred (pending) wrap: when a character is placed
+    /// at the last column, the wrap is deferred until the next character write.
     pub fn put_char(&mut self, ch: char) {
         if self.cols == 0 || self.rows == 0 {
             return;
+        }
+
+        // If a wrap was deferred, perform it now before placing the new character.
+        if self.pending_wrap {
+            self.cursor.col = 0;
+            self.advance_row();
+            self.pending_wrap = false;
         }
 
         let row = self.cursor.row.min(self.rows - 1);
@@ -144,27 +156,29 @@ impl ScreenBuffer {
         };
 
         if self.cursor.col + 1 >= self.cols {
-            // Wrap: move to start of next line
-            self.cursor.col = 0;
-            self.advance_row();
+            // Defer the wrap — cursor stays at last column.
+            self.pending_wrap = true;
         } else {
             self.cursor.col += 1;
         }
     }
 
-    /// Move cursor to the start of the next line, scrolling if at the bottom.
+    /// Move cursor down one row (LF/VT/FF), scrolling if at the bottom of the scroll region.
+    /// Does NOT reset column (use `carriage_return()` for that).
     pub fn newline(&mut self) {
-        self.cursor.col = 0;
+        self.pending_wrap = false;
         self.advance_row();
     }
 
     /// Move cursor to column 0 (carriage return).
     pub fn carriage_return(&mut self) {
+        self.pending_wrap = false;
         self.cursor.col = 0;
     }
 
     /// Move cursor left one column (backspace, don't erase).
     pub fn backspace(&mut self) {
+        self.pending_wrap = false;
         if self.cursor.col > 0 {
             self.cursor.col -= 1;
         }
@@ -172,12 +186,14 @@ impl ScreenBuffer {
 
     /// Move cursor to the next tab stop (multiples of 8).
     pub fn tab(&mut self) {
+        self.pending_wrap = false;
         let next = (self.cursor.col / 8 + 1) * 8;
         self.cursor.col = next.min(self.cols.saturating_sub(1));
     }
 
     /// Set cursor to the given (row, col), clamped to buffer bounds.
     pub fn set_cursor_position(&mut self, row: usize, col: usize) {
+        self.pending_wrap = false;
         self.cursor.row = row.min(self.rows.saturating_sub(1));
         self.cursor.col = col.min(self.cols.saturating_sub(1));
     }
@@ -319,23 +335,43 @@ impl ScreenBuffer {
         }
     }
 
-    /// Move cursor up by n rows (clamped).
+    /// Move cursor up by n rows.
+    /// When inside the scroll region, stops at scroll_top.
+    /// When outside the scroll region, clamps to row 0.
     pub fn cursor_up(&mut self, n: usize) {
-        self.cursor.row = self.cursor.row.saturating_sub(n);
+        self.pending_wrap = false;
+        if self.cursor.row >= self.scroll_top && self.cursor.row <= self.scroll_bottom {
+            // Inside region: clamp to scroll_top
+            self.cursor.row = self.cursor.row.saturating_sub(n).max(self.scroll_top);
+        } else {
+            // Outside region: clamp to row 0
+            self.cursor.row = self.cursor.row.saturating_sub(n);
+        }
     }
 
-    /// Move cursor down by n rows (clamped).
+    /// Move cursor down by n rows.
+    /// When inside the scroll region, stops at scroll_bottom.
+    /// When outside the scroll region, clamps to last row.
     pub fn cursor_down(&mut self, n: usize) {
-        self.cursor.row = (self.cursor.row + n).min(self.rows.saturating_sub(1));
+        self.pending_wrap = false;
+        if self.cursor.row >= self.scroll_top && self.cursor.row <= self.scroll_bottom {
+            // Inside region: clamp to scroll_bottom
+            self.cursor.row = (self.cursor.row + n).min(self.scroll_bottom);
+        } else {
+            // Outside region: clamp to last row
+            self.cursor.row = (self.cursor.row + n).min(self.rows.saturating_sub(1));
+        }
     }
 
     /// Move cursor forward (right) by n columns (clamped).
     pub fn cursor_forward(&mut self, n: usize) {
+        self.pending_wrap = false;
         self.cursor.col = (self.cursor.col + n).min(self.cols.saturating_sub(1));
     }
 
     /// Move cursor back (left) by n columns (clamped).
     pub fn cursor_back(&mut self, n: usize) {
+        self.pending_wrap = false;
         self.cursor.col = self.cursor.col.saturating_sub(n);
     }
 
@@ -376,24 +412,34 @@ impl ScreenBuffer {
         }
     }
 
-    /// Switch to alternate screen buffer (ESC[?1049h)
+    /// Switch to alternate screen buffer (ESC[?1049h).
+    /// If already on the alt screen, this is a no-op (don't double-save the main screen).
     pub fn enter_alt_screen(&mut self) {
-        self.save_cursor();
+        if self.alt_grid.is_some() {
+            // Already on alt screen — no-op
+            return;
+        }
+        // Save the main grid and cursor so we can restore them on leave.
         let old_grid = std::mem::replace(&mut self.grid, vec![vec![Cell::default(); self.cols]; self.rows]);
         self.alt_grid = Some(old_grid);
         self.alt_cursor = Some(self.cursor.clone());
         self.cursor = CursorState::default();
+        self.pending_wrap = false;
     }
 
-    /// Switch back from alternate screen buffer (ESC[?1049l)
+    /// Switch back from alternate screen buffer (ESC[?1049l).
+    /// If not on the alt screen, this is a no-op.
     pub fn leave_alt_screen(&mut self) {
         if let Some(old_grid) = self.alt_grid.take() {
             self.grid = old_grid;
+        } else {
+            // Not on alt screen — no-op
+            return;
         }
         if let Some(old_cursor) = self.alt_cursor.take() {
             self.cursor = old_cursor;
         }
-        self.restore_cursor();
+        self.pending_wrap = false;
     }
 
     /// Save cursor and style state (ESC 7 / DECSC)
@@ -504,15 +550,27 @@ impl ScreenBuffer {
     // --- Private helpers ---
 
     /// Move cursor down one row, scrolling the scroll region up if at the bottom.
+    /// If the cursor is outside the scroll region, it just moves down without scrolling
+    /// (clamped to the last row of the screen).
     fn advance_row(&mut self) {
         if self.rows == 0 {
             return;
         }
         if self.cursor.row == self.scroll_bottom {
-            // At bottom of scroll region → scroll the region up
+            // At bottom of scroll region → scroll the region up; cursor stays
             self.scroll_up_region(1);
-            // cursor stays at scroll_bottom
-        } else if self.cursor.row + 1 < self.rows {
+        } else if self.cursor.row < self.scroll_top {
+            // Above the scroll region: just move down, never scrolls
+            if self.cursor.row + 1 < self.rows {
+                self.cursor.row += 1;
+            }
+        } else if self.cursor.row > self.scroll_bottom {
+            // Below the scroll region: just move down, never scrolls
+            if self.cursor.row + 1 < self.rows {
+                self.cursor.row += 1;
+            }
+        } else {
+            // Inside the region but not at bottom: just move down
             self.cursor.row += 1;
         }
     }
@@ -665,7 +723,8 @@ impl vte::Perform for ScreenBuffer {
         match byte {
             0x08 => self.backspace(),
             0x09 => self.tab(),
-            0x0A..=0x0C => self.advance_row(),
+            // LF (0x0A), VT (0x0B), FF (0x0C): advance row only (no CR)
+            0x0A..=0x0C => self.newline(),
             0x0D => self.carriage_return(),
             _ => {}
         }
@@ -781,14 +840,19 @@ impl vte::Perform for ScreenBuffer {
                 self.set_scroll_region(top, bottom);
             }
             's' => self.save_cursor(),
-            'u' => self.restore_cursor(),
+            'u' => {
+                self.pending_wrap = false;
+                self.restore_cursor();
+            }
             'd' => {
                 // VPA: set cursor row (1-indexed)
+                self.pending_wrap = false;
                 let row = p(0, 1).saturating_sub(1);
                 self.cursor.row = row.min(self.rows.saturating_sub(1));
             }
             'G' | '`' => {
                 // CHA: set cursor col (1-indexed)
+                self.pending_wrap = false;
                 let col = p(0, 1).saturating_sub(1);
                 self.cursor.col = col.min(self.cols.saturating_sub(1));
             }
@@ -800,9 +864,13 @@ impl vte::Perform for ScreenBuffer {
     fn esc_dispatch(&mut self, intermediates: &[u8], _ignore: bool, byte: u8) {
         match (intermediates, byte) {
             (b"", b'7') => self.save_cursor(),   // DECSC
-            (b"", b'8') => self.restore_cursor(), // DECRC
+            (b"", b'8') => {
+                self.pending_wrap = false;
+                self.restore_cursor(); // DECRC
+            }
             (b"", b'M') => {
-                // Reverse index (RI): scroll down at top of scroll region
+                // Reverse index (RI): move cursor up one, scrolling down if at top of region
+                self.pending_wrap = false;
                 if self.cursor.row == self.scroll_top {
                     self.scroll_down_region(1);
                 } else if self.cursor.row > 0 {
@@ -811,10 +879,12 @@ impl vte::Perform for ScreenBuffer {
             }
             (b"", b'D') => {
                 // Index (IND): scroll up at bottom of scroll region
+                self.pending_wrap = false;
                 self.advance_row();
             }
             (b"", b'E') => {
                 // Next line (NEL)
+                self.pending_wrap = false;
                 self.cursor.col = 0;
                 self.advance_row();
             }
@@ -859,19 +929,25 @@ mod tests {
     }
 
     #[test]
-    fn test_put_char_wraps_at_end_of_line() {
+    fn test_put_char_deferred_wrap() {
         let mut buf = make_buf(5, 3);
-        // Fill entire first line
+        // Fill entire first line — with deferred wrap, after 5 chars cursor is still
+        // at the last col (pending_wrap=true), not yet on the next row.
         for _ in 0..5 {
             buf.put_char('X');
         }
-        // After writing 5 chars in a 5-col buffer, cursor wraps to next line
-        assert_eq!(buf.cursor.col, 0);
-        assert_eq!(buf.cursor.row, 1);
+        // Cursor stays at last column in pending-wrap state
+        assert_eq!(buf.cursor.col, 4);
+        assert_eq!(buf.cursor.row, 0);
         // All 5 chars in first row should be 'X'
         for c in 0..5 {
             assert_eq!(buf.visible_lines()[0][c].ch, 'X');
         }
+        // Writing the 6th character triggers the deferred wrap
+        buf.put_char('Y');
+        assert_eq!(buf.cursor.col, 1); // placed at col 0, cursor now at col 1
+        assert_eq!(buf.cursor.row, 1);
+        assert_eq!(buf.visible_lines()[1][0].ch, 'Y');
     }
 
     #[test]
@@ -879,7 +955,8 @@ mod tests {
         let mut buf = make_buf(80, 24);
         buf.cursor.col = 40;
         buf.newline();
-        assert_eq!(buf.cursor.col, 0);
+        // newline() only moves down — does NOT reset col (that's carriage_return's job)
+        assert_eq!(buf.cursor.col, 40);
         assert_eq!(buf.cursor.row, 1);
     }
 
@@ -1334,5 +1411,528 @@ mod vte_tests {
         assert_eq!(buf.visible_lines()[0][2].ch, 'C');
         assert_eq!(buf.visible_lines()[0][3].ch, 'D');
         assert_eq!(buf.visible_lines()[0][4].ch, ' '); // blank appended
+    }
+
+    // -------------------------------------------------------------------------
+    // Deferred wrap tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_deferred_wrap_basic() {
+        let mut vte = make_vte(5, 3);
+        // Write exactly 5 chars — cursor should sit at col 4 (pending wrap)
+        vte.process(b"ABCDE");
+        assert_eq!(vte.screen.cursor.col, 4);
+        assert_eq!(vte.screen.cursor.row, 0);
+        // Writing the 6th char triggers wrap then places it at col 0 of row 1
+        vte.process(b"F");
+        assert_eq!(vte.screen.cursor.row, 1);
+        assert_eq!(vte.screen.cursor.col, 1);
+        assert_eq!(vte.screen.visible_lines()[1][0].ch, 'F');
+    }
+
+    #[test]
+    fn test_deferred_wrap_cr_cancels_pending() {
+        let mut vte = make_vte(5, 3);
+        // Fill to last col → pending wrap
+        vte.process(b"ABCDE");
+        assert_eq!(vte.screen.cursor.col, 4);
+        // CR should cancel the pending wrap and go to col 0
+        vte.process(b"\r");
+        assert_eq!(vte.screen.cursor.col, 0);
+        assert_eq!(vte.screen.cursor.row, 0); // still row 0, no wrap happened
+    }
+
+    #[test]
+    fn test_deferred_wrap_lf_on_pending() {
+        let mut vte = make_vte(5, 3);
+        // Fill to last col → pending wrap
+        vte.process(b"ABCDE");
+        // LF after pending wrap: clears pending_wrap, advances row
+        vte.process(b"\n");
+        assert_eq!(vte.screen.cursor.row, 1);
+        assert_eq!(vte.screen.cursor.col, 4); // col stays (LF doesn't reset col)
+    }
+
+    #[test]
+    fn test_deferred_wrap_cursor_movement_cancels() {
+        let mut vte = make_vte(5, 3);
+        vte.process(b"ABCDE"); // pending wrap set
+        // Any cursor movement should cancel the pending wrap
+        vte.process(b"\x1b[1A"); // CUU — move up
+        assert_eq!(vte.screen.cursor.row, 0); // still row 0 (was already at 0 but clamped)
+        // No wrap happened
+        vte.process(b"X");
+        // Since pending_wrap was cleared, X goes to col 4 (current col), not to row 1
+        assert_eq!(vte.screen.visible_lines()[0][4].ch, 'X');
+        assert_eq!(vte.screen.cursor.row, 0); // still row 0 — pending_wrap caused overwrite at same spot
+    }
+
+    // -------------------------------------------------------------------------
+    // Scroll region tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_scroll_region_basic() {
+        let mut buf = ScreenBuffer::new(10, 5);
+        // Rows: A B C D E
+        for r in 0..5 {
+            buf.grid[r][0].ch = (b'A' + r as u8) as char;
+        }
+        // Set scroll region rows 1-3 (0-indexed)
+        buf.set_scroll_region(1, 3);
+        assert_eq!(buf.cursor.row, 0); // cursor goes to home after DECSTBM
+        assert_eq!(buf.cursor.col, 0);
+
+        // Scroll up 1 within region — row 1 (B) goes into scrollback, rows 2-3 shift up,
+        // blank inserted at row 3
+        buf.scroll_up_region(1);
+        assert_eq!(buf.visible_lines()[0][0].ch, 'A'); // unchanged
+        assert_eq!(buf.visible_lines()[1][0].ch, 'C'); // was row 2
+        assert_eq!(buf.visible_lines()[2][0].ch, 'D'); // was row 3
+        assert_eq!(buf.visible_lines()[3][0].ch, ' '); // blank inserted
+        assert_eq!(buf.visible_lines()[4][0].ch, 'E'); // below region, unchanged
+        // Scroll region scroll should NOT add to scrollback
+        assert_eq!(buf.scrollback_len(), 0);
+    }
+
+    #[test]
+    fn test_scroll_region_newline_at_bottom() {
+        // Set scroll region rows 1-3, cursor at row 3 (bottom of region).
+        // Newline should scroll within the region, not the whole screen.
+        let mut buf = ScreenBuffer::new(10, 5);
+        for r in 0..5 {
+            buf.grid[r][0].ch = (b'A' + r as u8) as char;
+        }
+        buf.set_scroll_region(1, 3);
+        buf.cursor.row = 3; // bottom of scroll region
+        buf.cursor.col = 0;
+
+        buf.newline(); // LF at scroll_bottom → scroll region up
+
+        assert_eq!(buf.visible_lines()[0][0].ch, 'A'); // unchanged
+        assert_eq!(buf.visible_lines()[1][0].ch, 'C'); // B scrolled off
+        assert_eq!(buf.visible_lines()[2][0].ch, 'D');
+        assert_eq!(buf.visible_lines()[3][0].ch, ' '); // blank at bottom of region
+        assert_eq!(buf.visible_lines()[4][0].ch, 'E'); // unchanged
+
+        assert_eq!(buf.cursor.row, 3); // stays at scroll_bottom
+        assert_eq!(buf.scrollback_len(), 0);
+    }
+
+    #[test]
+    fn test_scroll_region_cursor_outside_no_scroll() {
+        // Cursor outside scroll region: LF should move cursor down without scrolling
+        let mut buf = ScreenBuffer::new(10, 5);
+        for r in 0..5 {
+            buf.grid[r][0].ch = (b'A' + r as u8) as char;
+        }
+        // Scroll region is rows 1-3; cursor at row 4 (outside, below region)
+        buf.set_scroll_region(1, 3);
+        buf.cursor.row = 4;
+        buf.cursor.col = 0;
+
+        buf.newline(); // should NOT scroll anything
+
+        // All rows unchanged
+        assert_eq!(buf.visible_lines()[0][0].ch, 'A');
+        assert_eq!(buf.visible_lines()[1][0].ch, 'B');
+        assert_eq!(buf.visible_lines()[2][0].ch, 'C');
+        assert_eq!(buf.visible_lines()[3][0].ch, 'D');
+        assert_eq!(buf.visible_lines()[4][0].ch, 'E');
+        // Cursor stays at row 4 (already at last row, can't go further)
+        assert_eq!(buf.cursor.row, 4);
+        assert_eq!(buf.scrollback_len(), 0);
+    }
+
+    #[test]
+    fn test_scroll_region_cursor_stays_in_region() {
+        // CUU at scroll_top should stop at scroll_top (not go above)
+        let mut buf = ScreenBuffer::new(10, 10);
+        buf.set_scroll_region(2, 7);
+        buf.cursor.row = 2; // at scroll_top
+        buf.cursor_up(5); // should clamp to scroll_top
+        assert_eq!(buf.cursor.row, 2);
+
+        // CUD at scroll_bottom should stop at scroll_bottom
+        buf.cursor.row = 7; // at scroll_bottom
+        buf.cursor_down(5); // should clamp to scroll_bottom
+        assert_eq!(buf.cursor.row, 7);
+    }
+
+    #[test]
+    fn test_scroll_region_cuu_cud_inside_region() {
+        let mut buf = ScreenBuffer::new(10, 10);
+        buf.set_scroll_region(2, 7);
+
+        // Cursor in middle of region — CUU should stop at scroll_top
+        buf.cursor.row = 5;
+        buf.cursor_up(10); // large move, clamped to scroll_top=2
+        assert_eq!(buf.cursor.row, 2);
+
+        // CUD from scroll_top should reach scroll_bottom
+        buf.cursor_down(10); // large move, clamped to scroll_bottom=7
+        assert_eq!(buf.cursor.row, 7);
+    }
+
+    #[test]
+    fn test_scroll_region_insert_delete_lines() {
+        let mut buf = ScreenBuffer::new(10, 5);
+        for r in 0..5 {
+            buf.grid[r][0].ch = (b'A' + r as u8) as char;
+        }
+        buf.set_scroll_region(1, 3);
+        buf.cursor.row = 2;
+        buf.cursor.col = 0;
+
+        // Insert 1 line at row 2 within region [1..3]: rows 2 and 3 shift down, row 3 falls off
+        buf.insert_lines(1);
+        assert_eq!(buf.visible_lines()[0][0].ch, 'A'); // unchanged
+        assert_eq!(buf.visible_lines()[1][0].ch, 'B'); // unchanged
+        assert_eq!(buf.visible_lines()[2][0].ch, ' '); // blank inserted
+        assert_eq!(buf.visible_lines()[3][0].ch, 'C'); // shifted down
+        assert_eq!(buf.visible_lines()[4][0].ch, 'E'); // below region, unchanged
+
+        // Delete 1 line at row 2: blank removed, C shifts up, blank added at row 3
+        buf.delete_lines(1);
+        assert_eq!(buf.visible_lines()[2][0].ch, 'C');
+        assert_eq!(buf.visible_lines()[3][0].ch, ' ');
+    }
+
+    #[test]
+    fn test_scroll_region_reverse_index() {
+        let mut vte = make_vte(10, 5);
+        for r in 0..5usize {
+            vte.screen.grid[r][0].ch = (b'A' + r as u8) as char;
+        }
+        // Set scroll region rows 1-3 (1-indexed 2-4 → 0-indexed 1-3)
+        vte.process(b"\x1b[2;4r"); // DECSTBM rows 2-4 (1-indexed) → 0-indexed 1-3
+        vte.screen.cursor.row = 1; // at scroll_top
+
+        // ESC M (reverse index): at scroll_top → scroll down (insert blank at top of region)
+        vte.process(b"\x1bM");
+        assert_eq!(vte.screen.visible_lines()[0][0].ch, 'A'); // unchanged
+        assert_eq!(vte.screen.visible_lines()[1][0].ch, ' '); // blank inserted at top of region
+        assert_eq!(vte.screen.visible_lines()[2][0].ch, 'B'); // shifted down
+        assert_eq!(vte.screen.visible_lines()[3][0].ch, 'C'); // shifted down (D fell off)
+        assert_eq!(vte.screen.visible_lines()[4][0].ch, 'E'); // unchanged
+
+        // Cursor stays at scroll_top
+        assert_eq!(vte.screen.cursor.row, 1);
+    }
+
+    // -------------------------------------------------------------------------
+    // Cursor movement edge cases
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_cursor_home_default_params() {
+        // ESC[H with no params → home (0,0)
+        let mut vte = make_vte(80, 24);
+        vte.process(b"\x1b[5;10H"); // move elsewhere
+        vte.process(b"\x1b[H");     // no params → home
+        assert_eq!(vte.screen.cursor.row, 0);
+        assert_eq!(vte.screen.cursor.col, 0);
+    }
+
+    #[test]
+    fn test_cursor_partial_params_col_only() {
+        // ESC[;5H → row 1, col 5 (first param missing = 1)
+        let mut vte = make_vte(80, 24);
+        vte.process(b"\x1b[;5H");
+        assert_eq!(vte.screen.cursor.row, 0); // 1-indexed 1 → 0
+        assert_eq!(vte.screen.cursor.col, 4); // 1-indexed 5 → 4
+    }
+
+    #[test]
+    fn test_cursor_partial_params_row_only() {
+        // ESC[3H → row 3, col 1 (second param missing = 1)
+        let mut vte = make_vte(80, 24);
+        vte.process(b"\x1b[3H");
+        assert_eq!(vte.screen.cursor.row, 2); // 1-indexed 3 → 2
+        assert_eq!(vte.screen.cursor.col, 0); // default col = 1 → 0
+    }
+
+    #[test]
+    fn test_cursor_up_at_row_zero() {
+        let mut vte = make_vte(80, 24);
+        vte.process(b"\x1b[1;1H"); // home
+        vte.process(b"\x1b[5A");   // CUU 5 — already at row 0, should stay
+        assert_eq!(vte.screen.cursor.row, 0);
+    }
+
+    #[test]
+    fn test_cursor_next_prev_line() {
+        let mut vte = make_vte(80, 24);
+        vte.process(b"\x1b[5;10H"); // row 4, col 9
+        // CNL (E): cursor down n, col=0
+        vte.process(b"\x1b[2E");
+        assert_eq!(vte.screen.cursor.row, 6);
+        assert_eq!(vte.screen.cursor.col, 0);
+        // CPL (F): cursor up n, col=0
+        vte.process(b"\x1b[3F");
+        assert_eq!(vte.screen.cursor.row, 3);
+        assert_eq!(vte.screen.cursor.col, 0);
+    }
+
+    #[test]
+    fn test_scroll_up_down_csi() {
+        let mut vte = make_vte(10, 5);
+        for r in 0..5usize {
+            vte.screen.grid[r][0].ch = (b'A' + r as u8) as char;
+        }
+        // ESC[2S — scroll up 2 lines within scroll region (full screen)
+        vte.process(b"\x1b[2S");
+        assert_eq!(vte.screen.visible_lines()[0][0].ch, 'C');
+        assert_eq!(vte.screen.visible_lines()[2][0].ch, 'E');
+
+        // Restore
+        for r in 0..5usize {
+            vte.screen.grid[r][0].ch = (b'A' + r as u8) as char;
+        }
+        // ESC[1T — scroll down 1 line
+        vte.process(b"\x1b[1T");
+        assert_eq!(vte.screen.visible_lines()[0][0].ch, ' ');
+        assert_eq!(vte.screen.visible_lines()[1][0].ch, 'A');
+    }
+
+    // -------------------------------------------------------------------------
+    // Alternate screen tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_alt_screen_enter_leave() {
+        let mut vte = make_vte(10, 5);
+        // Write on main screen
+        vte.process(b"Hello");
+        assert_eq!(vte.screen.visible_lines()[0][0].ch, 'H');
+
+        // Enter alt screen
+        vte.process(b"\x1b[?1049h");
+        // Alt screen should be blank
+        for cell in &vte.screen.visible_lines()[0] {
+            assert_eq!(cell.ch, ' ');
+        }
+        assert_eq!(vte.screen.cursor.row, 0);
+        assert_eq!(vte.screen.cursor.col, 0);
+
+        // Write on alt screen
+        vte.process(b"Alt");
+        assert_eq!(vte.screen.visible_lines()[0][0].ch, 'A');
+
+        // Leave alt screen
+        vte.process(b"\x1b[?1049l");
+        // Main screen restored
+        assert_eq!(vte.screen.visible_lines()[0][0].ch, 'H');
+    }
+
+    #[test]
+    fn test_alt_screen_double_enter() {
+        let mut vte = make_vte(10, 5);
+        vte.process(b"Main");
+
+        // Enter alt screen twice — second enter should be a no-op
+        vte.process(b"\x1b[?1049h");
+        vte.process(b"AltContent");
+        vte.process(b"\x1b[?1049h"); // second enter: no-op, should not save alt as main
+
+        // Leave once should restore the original main screen
+        vte.process(b"\x1b[?1049l");
+        assert_eq!(vte.screen.visible_lines()[0][0].ch, 'M'); // "Main"
+    }
+
+    #[test]
+    fn test_alt_screen_leave_without_enter() {
+        let mut vte = make_vte(10, 5);
+        vte.process(b"Main");
+
+        // Leave without enter — should be a no-op (main screen untouched)
+        vte.process(b"\x1b[?1049l");
+        assert_eq!(vte.screen.visible_lines()[0][0].ch, 'M');
+    }
+
+    #[test]
+    fn test_alt_screen_resize() {
+        let mut vte = make_vte(10, 5);
+        vte.process(b"Main");
+        vte.process(b"\x1b[?1049h"); // enter alt screen
+
+        // Resize while on alt screen — both grids must be resized
+        vte.screen.resize(20, 10);
+        assert_eq!(vte.screen.cols(), 20);
+        assert_eq!(vte.screen.rows(), 10);
+        assert_eq!(vte.screen.visible_lines().len(), 10);
+
+        // Leave alt screen — main screen also resized
+        vte.process(b"\x1b[?1049l");
+        assert_eq!(vte.screen.visible_lines().len(), 10);
+        assert_eq!(vte.screen.visible_lines()[0].len(), 20);
+        // Original content in main screen preserved (M at [0][0])
+        assert_eq!(vte.screen.visible_lines()[0][0].ch, 'M');
+    }
+
+    // -------------------------------------------------------------------------
+    // SGR tests
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_sgr_multiple_params() {
+        let mut vte = make_vte(80, 24);
+        // ESC[1;31;42m — bold + red fg + green bg
+        vte.process(b"\x1b[1;31;42m");
+        assert!(vte.screen.current_modifiers.contains(Modifier::BOLD));
+        assert_eq!(vte.screen.current_fg, Color::Red);
+        assert_eq!(vte.screen.current_bg, Color::Green);
+    }
+
+    #[test]
+    fn test_sgr_reset_bold_and_dim() {
+        let mut vte = make_vte(80, 24);
+        // Set bold and dim
+        vte.process(b"\x1b[1m\x1b[2m");
+        assert!(vte.screen.current_modifiers.contains(Modifier::BOLD));
+        assert!(vte.screen.current_modifiers.contains(Modifier::DIM));
+        // ESC[22m removes BOTH bold AND dim
+        vte.process(b"\x1b[22m");
+        assert!(!vte.screen.current_modifiers.contains(Modifier::BOLD));
+        assert!(!vte.screen.current_modifiers.contains(Modifier::DIM));
+    }
+
+    #[test]
+    fn test_sgr_true_color_fg_bg() {
+        let mut vte = make_vte(80, 24);
+        // True color fg: ESC[38;2;100;150;200m
+        vte.process(b"\x1b[38;2;100;150;200m");
+        assert_eq!(vte.screen.current_fg, Color::Rgb(100, 150, 200));
+        // True color bg: ESC[48;2;10;20;30m
+        vte.process(b"\x1b[48;2;10;20;30m");
+        assert_eq!(vte.screen.current_bg, Color::Rgb(10, 20, 30));
+    }
+
+    #[test]
+    fn test_sgr_256_color_fg_bg() {
+        let mut vte = make_vte(80, 24);
+        // 256 fg: ESC[38;5;200m
+        vte.process(b"\x1b[38;5;200m");
+        assert_eq!(vte.screen.current_fg, Color::Indexed(200));
+        // 256 bg: ESC[48;5;50m
+        vte.process(b"\x1b[48;5;50m");
+        assert_eq!(vte.screen.current_bg, Color::Indexed(50));
+    }
+
+    #[test]
+    fn test_sgr_reset_all() {
+        let mut vte = make_vte(80, 24);
+        vte.process(b"\x1b[1;31;42m");
+        vte.process(b"\x1b[0m"); // reset
+        assert_eq!(vte.screen.current_fg, Color::Reset);
+        assert_eq!(vte.screen.current_bg, Color::Reset);
+        assert!(vte.screen.current_modifiers.is_empty());
+    }
+
+    // -------------------------------------------------------------------------
+    // Complex scenario: TUI app simulation
+    // -------------------------------------------------------------------------
+
+    #[test]
+    fn test_tui_app_simulation() {
+        // Simulate a typical TUI app: enter alt screen, set scroll region, write with colors,
+        // use cursor movement, then leave alt screen.
+        let mut vte = make_vte(20, 10);
+
+        // Write initial content on main screen
+        vte.process(b"MainScreen");
+
+        // Enter alternate screen
+        vte.process(b"\x1b[?1049h");
+        for cell in &vte.screen.visible_lines()[0] {
+            assert_eq!(cell.ch, ' ', "alt screen should be blank");
+        }
+
+        // Set scroll region rows 2-8 (1-indexed 3-9 → 0-indexed 2-8)
+        vte.process(b"\x1b[3;9r");
+        assert_eq!(vte.screen.cursor.row, 0);
+        assert_eq!(vte.screen.cursor.col, 0);
+
+        // Move to row 3 (0-indexed 2), write colored text
+        vte.process(b"\x1b[3;1H");           // move to row 3, col 1
+        vte.process(b"\x1b[1;32mHello\x1b[0m"); // bold green "Hello"
+
+        let cell = &vte.screen.visible_lines()[2][0];
+        assert_eq!(cell.ch, 'H');
+        assert!(cell.modifiers.contains(Modifier::BOLD));
+        assert_eq!(cell.fg, Color::Green);
+
+        // Move cursor to bottom of scroll region and newline to trigger region scroll
+        vte.process(b"\x1b[9;1H"); // row 9 (0-indexed 8), col 1 — bottom of scroll region
+        vte.process(b"BottomLine");
+        vte.process(b"\n");        // LF at scroll_bottom → scroll region up
+
+        // Cursor should still be at row 8 (scroll_bottom)
+        assert_eq!(vte.screen.cursor.row, 8);
+
+        // Leave alternate screen — main screen restored
+        vte.process(b"\x1b[?1049l");
+        assert_eq!(vte.screen.visible_lines()[0][0].ch, 'M');
+    }
+
+    #[test]
+    fn test_cursor_visibility() {
+        let mut vte = make_vte(80, 24);
+        assert!(vte.screen.cursor.visible);
+        // Hide cursor
+        vte.process(b"\x1b[?25l");
+        assert!(!vte.screen.cursor.visible);
+        // Show cursor
+        vte.process(b"\x1b[?25h");
+        assert!(vte.screen.cursor.visible);
+    }
+
+    #[test]
+    fn test_erase_character_csi_x() {
+        let mut vte = make_vte(10, 5);
+        vte.process(b"ABCDE");
+        // Move to col 1
+        vte.process(b"\x1b[1;2H");
+        // ESC[3X — erase 3 characters
+        vte.process(b"\x1b[3X");
+        let row = &vte.screen.visible_lines()[0];
+        assert_eq!(row[0].ch, 'A');
+        assert_eq!(row[1].ch, ' '); // erased
+        assert_eq!(row[2].ch, ' '); // erased
+        assert_eq!(row[3].ch, ' '); // erased
+        assert_eq!(row[4].ch, 'E'); // unchanged
+    }
+
+    #[test]
+    fn test_insert_character_csi_at() {
+        let mut vte = make_vte(5, 3);
+        vte.process(b"ABCDE");
+        // Move to col 1
+        vte.process(b"\x1b[1;2H");
+        // ESC[1@ — insert 1 blank char at col 1
+        vte.process(b"\x1b[1@");
+        let row = &vte.screen.visible_lines()[0];
+        assert_eq!(row[0].ch, 'A');
+        assert_eq!(row[1].ch, ' ');
+        assert_eq!(row[2].ch, 'B');
+        assert_eq!(row[3].ch, 'C');
+        assert_eq!(row[4].ch, 'D'); // E fell off
+    }
+
+    #[test]
+    fn test_delete_character_csi_p() {
+        let mut vte = make_vte(5, 3);
+        vte.process(b"ABCDE");
+        // Move to col 1
+        vte.process(b"\x1b[1;2H");
+        // ESC[1P — delete 1 char at col 1
+        vte.process(b"\x1b[1P");
+        let row = &vte.screen.visible_lines()[0];
+        assert_eq!(row[0].ch, 'A');
+        assert_eq!(row[1].ch, 'C');
+        assert_eq!(row[2].ch, 'D');
+        assert_eq!(row[3].ch, 'E');
+        assert_eq!(row[4].ch, ' '); // blank appended
     }
 }
