@@ -353,6 +353,221 @@ impl ScreenBuffer {
             self.cursor.row += 1;
         }
     }
+
+    /// Handle SGR (Select Graphic Rendition) parameters to update current style.
+    fn handle_sgr(&mut self, params: &vte::Params) {
+        let mut iter = params.iter();
+        loop {
+            let subparams = match iter.next() {
+                Some(s) => s,
+                None => break,
+            };
+            let p0 = subparams.first().copied().unwrap_or(0) as u32;
+            match p0 {
+                0 => self.reset_style(),
+                1 => self.current_modifiers |= Modifier::BOLD,
+                2 => self.current_modifiers |= Modifier::DIM,
+                3 => self.current_modifiers |= Modifier::ITALIC,
+                4 => self.current_modifiers |= Modifier::UNDERLINED,
+                7 => self.current_modifiers |= Modifier::REVERSED,
+                8 => self.current_modifiers |= Modifier::HIDDEN,
+                9 => self.current_modifiers |= Modifier::CROSSED_OUT,
+                22 => self.current_modifiers &= !(Modifier::BOLD | Modifier::DIM),
+                23 => self.current_modifiers &= !Modifier::ITALIC,
+                24 => self.current_modifiers &= !Modifier::UNDERLINED,
+                27 => self.current_modifiers &= !Modifier::REVERSED,
+                28 => self.current_modifiers &= !Modifier::HIDDEN,
+                29 => self.current_modifiers &= !Modifier::CROSSED_OUT,
+                30 => self.current_fg = Color::Black,
+                31 => self.current_fg = Color::Red,
+                32 => self.current_fg = Color::Green,
+                33 => self.current_fg = Color::Yellow,
+                34 => self.current_fg = Color::Blue,
+                35 => self.current_fg = Color::Magenta,
+                36 => self.current_fg = Color::Cyan,
+                37 => self.current_fg = Color::Gray,
+                38 => {
+                    // Extended fg color — subparams or read next params
+                    if let Some(color) = Self::parse_extended_color(subparams, &mut iter) {
+                        self.current_fg = color;
+                    }
+                }
+                39 => self.current_fg = Color::Reset,
+                40 => self.current_bg = Color::Black,
+                41 => self.current_bg = Color::Red,
+                42 => self.current_bg = Color::Green,
+                43 => self.current_bg = Color::Yellow,
+                44 => self.current_bg = Color::Blue,
+                45 => self.current_bg = Color::Magenta,
+                46 => self.current_bg = Color::Cyan,
+                47 => self.current_bg = Color::Gray,
+                48 => {
+                    // Extended bg color
+                    if let Some(color) = Self::parse_extended_color(subparams, &mut iter) {
+                        self.current_bg = color;
+                    }
+                }
+                49 => self.current_bg = Color::Reset,
+                90 => self.current_fg = Color::DarkGray,
+                91 => self.current_fg = Color::LightRed,
+                92 => self.current_fg = Color::LightGreen,
+                93 => self.current_fg = Color::LightYellow,
+                94 => self.current_fg = Color::LightBlue,
+                95 => self.current_fg = Color::LightMagenta,
+                96 => self.current_fg = Color::LightCyan,
+                97 => self.current_fg = Color::White,
+                100 => self.current_bg = Color::DarkGray,
+                101 => self.current_bg = Color::LightRed,
+                102 => self.current_bg = Color::LightGreen,
+                103 => self.current_bg = Color::LightYellow,
+                104 => self.current_bg = Color::LightBlue,
+                105 => self.current_bg = Color::LightMagenta,
+                106 => self.current_bg = Color::LightCyan,
+                107 => self.current_bg = Color::White,
+                _ => {}
+            }
+        }
+    }
+
+    /// Parse an extended color from SGR params.
+    /// subparams: the current subparam slice (e.g. [38, 5, N] or [38, 2, R, G, B]).
+    /// If subparams only has the leading code (38/48), consume additional params from iter.
+    fn parse_extended_color(
+        subparams: &[u16],
+        iter: &mut vte::ParamsIter<'_>,
+    ) -> Option<Color> {
+        // subparams may be [38] or [38, 5, N] or [38, 2, R, G, B] depending on encoding
+        // The mode is the second element
+        let mode = if subparams.len() >= 2 {
+            subparams[1]
+        } else {
+            // Read next sub-param group as mode
+            iter.next()?.first().copied()?
+        };
+
+        match mode {
+            5 => {
+                // 256 color: ;5;N
+                let n = if subparams.len() >= 3 {
+                    subparams[2]
+                } else {
+                    iter.next()?.first().copied()?
+                };
+                Some(Color::Indexed(n as u8))
+            }
+            2 => {
+                // True color: ;2;R;G;B
+                let (r, g, b) = if subparams.len() >= 5 {
+                    (subparams[2], subparams[3], subparams[4])
+                } else if subparams.len() == 4 {
+                    // Some encodings embed R inline
+                    let r = subparams[2];
+                    let g = subparams[3];
+                    let b = iter.next()?.first().copied()?;
+                    (r, g, b)
+                } else {
+                    let r = iter.next()?.first().copied()?;
+                    let g = iter.next()?.first().copied()?;
+                    let b = iter.next()?.first().copied()?;
+                    (r, g, b)
+                };
+                Some(Color::Rgb(r as u8, g as u8, b as u8))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// VTE state: wraps a parser and ScreenBuffer to process raw terminal bytes.
+pub struct VteState {
+    parser: vte::Parser,
+    pub screen: ScreenBuffer,
+}
+
+impl VteState {
+    pub fn new(cols: usize, rows: usize) -> Self {
+        Self {
+            parser: vte::Parser::new(),
+            screen: ScreenBuffer::new(cols, rows),
+        }
+    }
+
+    pub fn process(&mut self, bytes: &[u8]) {
+        self.parser.advance(&mut self.screen, bytes);
+    }
+}
+
+impl vte::Perform for ScreenBuffer {
+    fn print(&mut self, c: char) {
+        self.put_char(c);
+    }
+
+    fn execute(&mut self, byte: u8) {
+        match byte {
+            0x08 => self.backspace(),
+            0x09 => self.tab(),
+            0x0A | 0x0B | 0x0C => self.advance_row(),
+            0x0D => self.carriage_return(),
+            _ => {}
+        }
+    }
+
+    fn csi_dispatch(
+        &mut self,
+        params: &vte::Params,
+        _intermediates: &[u8],
+        _ignore: bool,
+        action: char,
+    ) {
+        // Helper: get nth param as usize, defaulting to `default` if absent or zero
+        let param_list: Vec<u16> = params.iter().map(|s| s.first().copied().unwrap_or(0)).collect();
+        let p = |idx: usize, default: usize| -> usize {
+            let v = param_list.get(idx).copied().unwrap_or(0) as usize;
+            if v == 0 { default } else { v }
+        };
+        let p0_raw = |default: usize| -> usize {
+            let v = param_list.first().copied().unwrap_or(0) as usize;
+            if v == 0 { default } else { v }
+        };
+
+        match action {
+            'A' => self.cursor_up(p(0, 1)),
+            'B' => self.cursor_down(p(0, 1)),
+            'C' => self.cursor_forward(p(0, 1)),
+            'D' => self.cursor_back(p(0, 1)),
+            'H' | 'f' => {
+                let row = p(0, 1).saturating_sub(1);
+                let col = p(1, 1).saturating_sub(1);
+                self.set_cursor_position(row, col);
+            }
+            'J' => {
+                let mode = p0_raw(0) as u8;
+                self.erase_in_display(mode);
+            }
+            'K' => {
+                let mode = p0_raw(0) as u8;
+                self.erase_in_line(mode);
+            }
+            'L' => self.insert_lines(p(0, 1)),
+            'M' => self.delete_lines(p(0, 1)),
+            'd' => {
+                // VPA: set cursor row (1-indexed)
+                let row = p(0, 1).saturating_sub(1);
+                self.cursor.row = row.min(self.rows.saturating_sub(1));
+            }
+            'G' | '`' => {
+                // CHA: set cursor col (1-indexed)
+                let col = p(0, 1).saturating_sub(1);
+                self.cursor.col = col.min(self.cols.saturating_sub(1));
+            }
+            'm' => self.handle_sgr(params),
+            _ => {}
+        }
+    }
+
+    fn esc_dispatch(&mut self, _intermediates: &[u8], _ignore: bool, _byte: u8) {}
+
+    fn osc_dispatch(&mut self, _params: &[&[u8]], _bell_terminated: bool) {}
 }
 
 #[cfg(test)]
@@ -615,5 +830,139 @@ mod tests {
         assert_eq!(cell.fg, Color::Red);
         assert_eq!(cell.bg, Color::Blue);
         assert_eq!(cell.modifiers, Modifier::BOLD);
+    }
+}
+
+#[cfg(test)]
+mod vte_tests {
+    use super::*;
+    use ratatui::style::{Color, Modifier};
+
+    fn make_vte(cols: usize, rows: usize) -> VteState {
+        VteState::new(cols, rows)
+    }
+
+    #[test]
+    fn test_plain_text() {
+        let mut vte = make_vte(80, 24);
+        vte.process(b"Hello, world!");
+        let lines = vte.screen.visible_lines();
+        let text: String = lines[0][..13].iter().map(|c| c.ch).collect();
+        assert_eq!(text, "Hello, world!");
+    }
+
+    #[test]
+    fn test_crlf() {
+        let mut vte = make_vte(80, 24);
+        vte.process(b"Line1\r\nLine2");
+        let lines = vte.screen.visible_lines();
+        let line0: String = lines[0][..5].iter().map(|c| c.ch).collect();
+        let line1: String = lines[1][..5].iter().map(|c| c.ch).collect();
+        assert_eq!(line0, "Line1");
+        assert_eq!(line1, "Line2");
+    }
+
+    #[test]
+    fn test_sgr_foreground_standard() {
+        let mut vte = make_vte(80, 24);
+        // ESC[31m — red foreground
+        vte.process(b"\x1b[31m");
+        assert_eq!(vte.screen.current_fg, Color::Red);
+    }
+
+    #[test]
+    fn test_sgr_true_color() {
+        let mut vte = make_vte(80, 24);
+        // ESC[38;2;255;128;0m — true color fg
+        vte.process(b"\x1b[38;2;255;128;0m");
+        assert_eq!(vte.screen.current_fg, Color::Rgb(255, 128, 0));
+    }
+
+    #[test]
+    fn test_sgr_256_color() {
+        let mut vte = make_vte(80, 24);
+        // ESC[38;5;196m — 256 color fg
+        vte.process(b"\x1b[38;5;196m");
+        assert_eq!(vte.screen.current_fg, Color::Indexed(196));
+    }
+
+    #[test]
+    fn test_sgr_bold() {
+        let mut vte = make_vte(80, 24);
+        vte.process(b"\x1b[1m");
+        assert!(vte.screen.current_modifiers.contains(Modifier::BOLD));
+    }
+
+    #[test]
+    fn test_cursor_position() {
+        let mut vte = make_vte(80, 24);
+        // ESC[3;5H — row 3, col 5 (1-indexed → row 2, col 4 zero-indexed)
+        vte.process(b"\x1b[3;5H");
+        assert_eq!(vte.screen.cursor.row, 2);
+        assert_eq!(vte.screen.cursor.col, 4);
+    }
+
+    #[test]
+    fn test_erase_display() {
+        let mut vte = make_vte(10, 5);
+        vte.process(b"Hello");
+        // ESC[2J — erase entire display
+        vte.process(b"\x1b[2J");
+        for row in vte.screen.visible_lines() {
+            for cell in row {
+                assert_eq!(cell.ch, ' ');
+            }
+        }
+    }
+
+    #[test]
+    fn test_erase_line() {
+        let mut vte = make_vte(80, 24);
+        // Move to row 1, col 5
+        vte.process(b"\x1b[1;6H");
+        // Write some chars so there's content
+        vte.process(b"Hello");
+        // Move back to start of that line, col 6 (where we started writing)
+        vte.process(b"\x1b[1;6H");
+        // ESC[K — erase from cursor to end of line (mode 0)
+        vte.process(b"\x1b[K");
+        let row = &vte.screen.visible_lines()[0];
+        // Cols 0-4 should be spaces (never written), cols 5+ should be erased
+        for c in 5..80 {
+            assert_eq!(row[c].ch, ' ', "col {} should be space", c);
+        }
+    }
+
+    #[test]
+    fn test_cursor_movement() {
+        let mut vte = make_vte(80, 24);
+        // ESC[5;10H → row 4, col 9
+        vte.process(b"\x1b[5;10H");
+        // ESC[2A → cursor up 2 → row 2
+        vte.process(b"\x1b[2A");
+        // ESC[3C → cursor forward 3 → col 12
+        vte.process(b"\x1b[3C");
+        assert_eq!(vte.screen.cursor.row, 2);
+        assert_eq!(vte.screen.cursor.col, 12);
+    }
+
+    #[test]
+    fn test_backspace_control() {
+        let mut vte = make_vte(80, 24);
+        // 'A', 'B', backspace, 'C' → A at col 0, C at col 1
+        vte.process(b"AB\x08C");
+        let row = &vte.screen.visible_lines()[0];
+        assert_eq!(row[0].ch, 'A');
+        assert_eq!(row[1].ch, 'C');
+    }
+
+    #[test]
+    fn test_tab_control() {
+        let mut vte = make_vte(80, 24);
+        // 'A', tab, 'B' → A at col 0, B at col 8
+        vte.process(b"A\tB");
+        let row = &vte.screen.visible_lines()[0];
+        assert_eq!(row[0].ch, 'A');
+        assert_eq!(row[8].ch, 'B');
     }
 }
