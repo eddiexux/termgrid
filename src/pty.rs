@@ -14,18 +14,20 @@ pub struct PtyHandle {
 
 impl PtyHandle {
     pub fn spawn(shell: &str, cwd: &Path, cols: u16, rows: u16) -> Result<(Self, PtyReader)> {
+        tracing::debug!("PTY spawned: shell={}, cwd={:?}, size={}x{}", shell, cwd, cols, rows);
         let pty_system = portable_pty::native_pty_system();
         let pair = pty_system.openpty(PtySize {
             rows,
             cols,
             pixel_width: 0,
             pixel_height: 0,
-        })?;
+        }).map_err(|e| { tracing::error!("PTY spawn failed: {}", e); e })?;
 
         let mut cmd = CommandBuilder::new(shell);
         cmd.cwd(cwd);
 
-        let child = pair.slave.spawn_command(cmd)?;
+        let child = pair.slave.spawn_command(cmd)
+            .map_err(|e| { tracing::error!("PTY spawn failed: {}", e); e })?;
         drop(pair.slave);
 
         let reader = pair.master.try_clone_reader()?;

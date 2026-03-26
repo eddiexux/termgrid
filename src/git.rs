@@ -10,7 +10,14 @@ pub struct GitContext {
 }
 
 pub fn detect_git(path: &Path) -> Option<GitContext> {
-    let repo = git2::Repository::discover(path).ok()?;
+    let repo = git2::Repository::discover(path).ok();
+    let repo = match repo {
+        Some(r) => r,
+        None => {
+            tracing::debug!("Git detect at {:?}: not a git repository", path);
+            return None;
+        }
+    };
 
     let workdir = repo.workdir()?;
 
@@ -43,13 +50,15 @@ pub fn detect_git(path: &Path) -> Option<GitContext> {
 
     let repo_root = workdir.to_path_buf();
 
-    Some(GitContext {
+    let ctx = GitContext {
         project_name,
         branch,
         is_worktree,
         worktree_name,
         repo_root,
-    })
+    };
+    tracing::debug!("Git detect at {:?}: project={}, branch={:?}", path, ctx.project_name, ctx.branch);
+    Some(ctx)
 }
 
 fn find_main_repo_name(repo: &git2::Repository) -> String {

@@ -1,4 +1,4 @@
-use crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseEvent};
+use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 
 use crate::app::{AppMode, OverlayKind};
 use crate::tab::{self, TabEntry, TabFilter};
@@ -79,22 +79,6 @@ fn handle_normal_key(
                 }
             }
         }
-        KeyCode::Char('1') => {
-            // columns setting is handled by App, signal via a side-channel
-            // For now, store in a local — App reads columns from self.columns
-            // We can't mutate columns here as it's not passed as &mut.
-            // The spec says "set columns" — we need to return something.
-            // Since InputResult only has Continue/Quit, columns mutation
-            // must be handled by App inspecting the key directly, or we
-            // leave this as a no-op stub at the input layer.
-            // Per the spec, "1/2/3 → set columns" — App will handle this
-            // by checking the key after calling handle_key, or we extend
-            // InputResult. To keep the interface simple, we return Continue
-            // and App handles column keys before calling handle_key.
-            // Nothing to do here.
-        }
-        KeyCode::Char('2') => {}
-        KeyCode::Char('3') => {}
         KeyCode::Tab => {
             *active_tab = tab::next_tab(active_tab, tab_entries);
         }
@@ -194,15 +178,6 @@ pub fn key_event_to_bytes(key: &KeyEvent) -> Vec<u8> {
     }
 }
 
-/// Mouse event stub — no-op for now.
-pub fn handle_mouse(
-    _mouse: MouseEvent,
-    _mode: &mut AppMode,
-    _tile_manager: &mut TileManager,
-    _active_tab: &mut TabFilter,
-) -> InputResult {
-    InputResult::Continue
-}
 
 #[cfg(test)]
 mod tests {

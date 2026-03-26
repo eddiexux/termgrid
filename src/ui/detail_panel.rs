@@ -7,7 +7,6 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
-
 /// Render the detail panel. Returns cursor screen position if cursor should be shown.
 pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&str>) -> Option<(u16, u16)> {
     // Render the outer block with left border as vertical separator
@@ -24,7 +23,7 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&s
     }
 
     // Split: header lines + separator + terminal area
-    let header_height = 3u16; // title line + path line + separator
+    let header_height = crate::layout::DETAIL_HEADER_HEIGHT;
     if inner.height <= header_height {
         return None;
     }
@@ -85,23 +84,11 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, index_label: Option<&s
         };
         let end_row = (start_row + rows).min(total_visible);
 
-        let text_lines: Vec<Line> = visible[start_row..end_row]
+        let slice: Vec<&[crate::screen::Cell]> = visible[start_row..end_row]
             .iter()
-            .map(|row| {
-                let spans: Vec<Span> = row
-                    .iter()
-                    .take(cols)
-                    .map(|cell| {
-                        let style = Style::default()
-                            .fg(cell.fg)
-                            .bg(cell.bg)
-                            .add_modifier(cell.modifiers);
-                        Span::styled(cell.ch.to_string(), style)
-                    })
-                    .collect();
-                Line::from(spans)
-            })
+            .map(|row| row.as_slice())
             .collect();
+        let text_lines = super::screen_rows_to_lines(&slice, cols);
 
         let terminal_para = Paragraph::new(Text::from(text_lines));
         frame.render_widget(terminal_para, terminal_area);

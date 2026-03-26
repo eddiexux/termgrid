@@ -27,12 +27,15 @@ impl Session {
         }
         let json = serde_json::to_string_pretty(self)?;
         std::fs::write(path, json)?;
+        tracing::info!("Session saved: {} tiles", self.tiles.len());
         Ok(())
     }
 
     pub fn load(path: &Path) -> Option<Self> {
         let content = std::fs::read_to_string(path).ok()?;
-        serde_json::from_str(&content).ok()
+        let session: Self = serde_json::from_str(&content).ok()?;
+        tracing::info!("Session loaded: {} tiles", session.tiles.len());
+        Some(session)
     }
 }
 

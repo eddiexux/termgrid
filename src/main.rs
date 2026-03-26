@@ -17,8 +17,35 @@ struct Cli {
     fresh: bool,
 }
 
+fn init_logging() -> PathBuf {
+    use tracing_subscriber::EnvFilter;
+
+    let log_dir = dirs::data_local_dir()
+        .unwrap_or_else(|| std::path::PathBuf::from("/tmp"))
+        .join("termgrid");
+    std::fs::create_dir_all(&log_dir).ok();
+
+    let file_appender = tracing_appender::rolling::daily(&log_dir, "termgrid.log");
+
+    tracing_subscriber::fmt()
+        .with_writer(file_appender)
+        .with_env_filter(
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+        )
+        .with_ansi(false)
+        .init();
+
+    tracing::info!("termgrid v{} started", env!("CARGO_PKG_VERSION"));
+
+    log_dir
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    let log_dir = init_logging();
+    let log_path = log_dir.join("termgrid.log");
+    eprintln!("termgrid: logging to {}", log_path.display());
+
     let cli = Cli::parse();
     let config = Config::load(&Config::config_path());
     let mut app = App::new(config);

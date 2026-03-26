@@ -9,8 +9,29 @@ use crate::app::AppMode;
 use crate::layout::LayoutResult;
 use crate::tab::{TabEntry, TabFilter};
 use crate::tile_manager::TileManager;
+use ratatui::style::Style;
+use ratatui::text::{Line, Span};
 use ratatui::Frame;
 use std::collections::HashMap;
+
+/// Convert a slice of screen buffer rows to ratatui Lines.
+pub fn screen_rows_to_lines(rows: &[&[crate::screen::Cell]], max_width: usize) -> Vec<Line<'static>> {
+    rows.iter()
+        .map(|row| {
+            let spans: Vec<Span> = row
+                .iter()
+                .take(max_width)
+                .map(|cell| {
+                    Span::styled(
+                        cell.ch.to_string(),
+                        Style::default().fg(cell.fg).bg(cell.bg).add_modifier(cell.modifiers),
+                    )
+                })
+                .collect();
+            Line::from(spans)
+        })
+        .collect()
+}
 
 pub fn render(
     frame: &mut Frame,

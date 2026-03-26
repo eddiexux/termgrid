@@ -37,6 +37,7 @@ impl Tile {
         rows: u16,
     ) -> anyhow::Result<(Self, PtyReader)> {
         let (pty, reader) = PtyHandle::spawn(shell, cwd, cols, rows)?;
+        tracing::info!("Tile {} spawned, PID {:?}", id.0, pty.pid());
         let vte = VteState::new(cols as usize, rows as usize);
         let git_context = detect_git(cwd);
 
@@ -57,6 +58,7 @@ impl Tile {
     /// Feed bytes into the VTE parser and update last_active.
     /// Any pending terminal query responses (e.g. DSR, DA) are sent back to the PTY.
     pub fn process_output(&mut self, bytes: &[u8]) {
+        tracing::trace!("Tile {} received {} bytes", self.id.0, bytes.len());
         self.vte.process(bytes);
         self.last_active = Instant::now();
         // Send any pending responses back to the PTY
@@ -68,6 +70,7 @@ impl Tile {
     /// Update cwd; if it changed, re-detect git context.
     pub fn update_cwd(&mut self, new_cwd: PathBuf) {
         if new_cwd != self.cwd {
+            tracing::debug!("Tile {} CWD changed to {:?}", self.id.0, new_cwd);
             self.cwd = new_cwd;
             self.git_context = detect_git(&self.cwd);
         }

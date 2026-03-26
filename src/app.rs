@@ -79,13 +79,10 @@ impl App {
 
     pub fn spawn_tile(&mut self, cwd: &Path) -> anyhow::Result<TileId> {
         let id = self.tile_manager.next_tile_id();
+        tracing::info!("Spawning tile {} in {:?}", id.0, cwd);
         // Use actual terminal dimensions for PTY size
         let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        // PTY size based on detail panel: ~45% width, minus tab bar and status bar
-        let pty_cols = ((term_cols as u32 * self.config.layout.detail_panel_width as u32) / 100) as u16;
-        let pty_rows = term_rows.saturating_sub(4); // subtract tab bar (2) + status bar (1) + header (3) margin
-        let pty_cols = pty_cols.max(40);
-        let pty_rows = pty_rows.max(10);
+        let (pty_cols, pty_rows) = Self::estimate_pty_size(term_cols, term_rows, self.config.layout.detail_panel_width);
         let (tile, reader) = crate::tile::Tile::spawn(
             id,
             &self.config.terminal.shell,
@@ -103,6 +100,7 @@ impl App {
     }
 
     pub async fn run(&mut self) -> anyhow::Result<()> {
+        tracing::info!("App started");
         // Set up terminal
         enable_raw_mode()?;
         let mut stdout = std::io::stdout();
@@ -180,8 +178,7 @@ impl App {
             // Sync PTY size with actual detail panel terminal area.
             // Detail panel terminal area = panel rect minus left border (1 col) minus header (3 rows).
             if let Some(detail_rect) = captured_layout.detail_panel {
-                let pty_cols = detail_rect.width.saturating_sub(1); // left border
-                let pty_rows = detail_rect.height.saturating_sub(3); // header lines
+                let (pty_cols, pty_rows) = Self::pty_size_from_detail_panel(&detail_rect);
                 if pty_cols >= 10 && pty_rows >= 5 {
                     self.sync_pty_sizes(pty_cols, pty_rows);
                 }
@@ -212,6 +209,7 @@ impl App {
             DisableMouseCapture
         )?;
         terminal.show_cursor()?;
+        tracing::info!("App stopped");
 
         Ok(())
     }
@@ -261,10 +259,7 @@ impl App {
             }
             AppEvent::Crossterm(CEvent::Resize(cols, rows)) => {
                 // Resize selected tile's PTY to match new detail panel size
-                let pty_cols = ((cols as u32 * self.config.layout.detail_panel_width as u32) / 100) as u16;
-                let pty_rows = rows.saturating_sub(6);
-                let pty_cols = pty_cols.max(40);
-                let pty_rows = pty_rows.max(10);
+                let (pty_cols, pty_rows) = Self::estimate_pty_size(cols, rows, self.config.layout.detail_panel_width);
                 if let Some(tile) = self.tile_manager.selected_mut() {
                     let _ = tile.resize(pty_cols, pty_rows);
                 }
@@ -273,6 +268,8 @@ impl App {
             AppEvent::PtyOutput(tile_id, data) => {
                 if let Some(tile) = self.tile_manager.get_mut(tile_id) {
                     tile.process_output(&data);
+                } else {
+                    tracing::debug!("PtyOutput for unknown tile {:?}", tile_id);
                 }
             }
             AppEvent::CwdChanged(tile_id, new_cwd) => {
@@ -445,12 +442,31 @@ impl App {
         self.columns = columns.clamp(1, 3);
     }
 
+    /// Compute PTY dimensions from detail panel rect.
+    /// Detail panel terminal area = panel minus left border (1 col) minus header (3 rows).
+    fn pty_size_from_detail_panel(detail: &ratatui::layout::Rect) -> (u16, u16) {
+        let cols = detail.width.saturating_sub(crate::layout::DETAIL_BORDER_WIDTH).max(10);
+        let rows = detail.height.saturating_sub(crate::layout::DETAIL_HEADER_HEIGHT).max(5);
+        (cols, rows)
+    }
+
+    /// Estimate PTY dimensions before first render (when detail panel rect is unknown).
+    fn estimate_pty_size(term_cols: u16, term_rows: u16, detail_width_pct: u16) -> (u16, u16) {
+        let detail_width = ((term_cols as u32 * detail_width_pct as u32) / 100) as u16;
+        let cols = detail_width.saturating_sub(crate::layout::DETAIL_BORDER_WIDTH).max(10);
+        let rows = term_rows
+            .saturating_sub(crate::layout::TAB_BAR_HEIGHT + crate::layout::STATUS_BAR_HEIGHT + crate::layout::DETAIL_HEADER_HEIGHT)
+            .max(5);
+        (cols, rows)
+    }
+
     /// Resize all tiles' PTY + screen buffer to match the actual detail panel terminal area.
     /// Only resizes tiles whose current screen dimensions differ.
     fn sync_pty_sizes(&mut self, cols: u16, rows: u16) {
         for tile in self.tile_manager.tiles_mut() {
             let screen = &tile.vte.screen;
             if screen.cols() != cols as usize || screen.rows() != rows as usize {
+                tracing::debug!("Resizing tile {} PTY to {}x{}", tile.id.0, cols, rows);
                 let _ = tile.resize(cols, rows);
             }
         }
@@ -473,6 +489,7 @@ async fn pty_reader_task(
         match read_result {
             Ok((r, _buf, Ok(0))) => {
                 // EOF
+                tracing::debug!("PTY reader EOF for tile {}", tile_id.0);
                 let _ = r; // drop reader
                 break;
             }
@@ -483,7 +500,10 @@ async fn pty_reader_task(
                     break;
                 }
             }
-            _ => break,
+            _ => {
+                tracing::debug!("PTY reader error for tile {}", tile_id.0);
+                break;
+            }
         }
     }
 }

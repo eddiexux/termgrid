@@ -1,14 +1,5 @@
 use std::path::PathBuf;
 
-/// Represents the current state of a terminal process.
-#[derive(Debug, Clone, PartialEq)]
-pub enum ProcessState {
-    /// PTY has a foreground child process (not the shell itself).
-    Running,
-    /// Shell is in foreground, waiting for user input.
-    Waiting,
-}
-
 /// Get foreground process group ID from PTY master file descriptor.
 ///
 /// # Arguments
@@ -85,23 +76,6 @@ pub fn get_process_cwd(pid: i32) -> Option<PathBuf> {
     }
 }
 
-/// Determine the process state based on the shell PID and foreground process group ID.
-///
-/// # Arguments
-/// * `shell_pid` - The PID of the shell process
-/// * `fg_pgid` - The foreground process group ID from the PTY
-///
-/// # Returns
-/// `ProcessState::Waiting` if the shell is in the foreground (waiting for input),
-/// `ProcessState::Running` if another process is in the foreground.
-pub fn detect_process_state(shell_pid: u32, fg_pgid: i32) -> ProcessState {
-    if fg_pgid as u32 == shell_pid {
-        ProcessState::Waiting
-    } else {
-        ProcessState::Running
-    }
-}
-
 // Non-macOS stubs
 #[cfg(not(target_os = "macos"))]
 pub fn get_foreground_pid(_master_fd: i32) -> Option<i32> {
@@ -116,26 +90,6 @@ pub fn get_process_cwd(_pid: i32) -> Option<PathBuf> {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn test_detect_process_state_waiting() {
-        let shell_pid = 1234u32;
-        let fg_pgid = 1234i32;
-        assert_eq!(
-            detect_process_state(shell_pid, fg_pgid),
-            ProcessState::Waiting
-        );
-    }
-
-    #[test]
-    fn test_detect_process_state_running() {
-        let shell_pid = 1234u32;
-        let fg_pgid = 5678i32;
-        assert_eq!(
-            detect_process_state(shell_pid, fg_pgid),
-            ProcessState::Running
-        );
-    }
 
     #[test]
     #[cfg(target_os = "macos")]

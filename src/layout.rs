@@ -1,5 +1,18 @@
 use ratatui::layout::Rect;
 
+/// Tab bar height including bottom border.
+pub const TAB_BAR_HEIGHT: u16 = 2;
+/// Status bar height.
+pub const STATUS_BAR_HEIGHT: u16 = 1;
+/// Minimum tile card height in the grid.
+pub const MIN_TILE_HEIGHT: u16 = 5;
+/// Maximum tile card height in the grid.
+pub const MAX_TILE_HEIGHT: u16 = 14;
+/// Detail panel header height (title + path + separator).
+pub const DETAIL_HEADER_HEIGHT: u16 = 3;
+/// Detail panel left border width.
+pub const DETAIL_BORDER_WIDTH: u16 = 1;
+
 /// Result of layout calculation containing all UI component rectangles
 #[derive(Debug, Clone)]
 pub struct LayoutResult {
@@ -34,12 +47,11 @@ pub fn calculate_layout(
     let columns = columns.clamp(1, 3);
 
     // Tab bar at top (2 lines: content + bottom border)
-    let tab_bar_height = 2u16;
     let tab_bar = Rect {
         x: total.x,
         y: total.y,
         width: total.width,
-        height: tab_bar_height,
+        height: TAB_BAR_HEIGHT,
     };
 
     // Status bar at bottom
@@ -47,12 +59,12 @@ pub fn calculate_layout(
         x: total.x,
         y: total.y + total.height.saturating_sub(1),
         width: total.width,
-        height: 1,
+        height: STATUS_BAR_HEIGHT,
     };
 
     // Middle area between tab bar and status bar
-    let middle_height = total.height.saturating_sub(tab_bar_height + 1).max(1);
-    let middle_y = total.y + tab_bar_height;
+    let middle_height = total.height.saturating_sub(TAB_BAR_HEIGHT + STATUS_BAR_HEIGHT).max(1);
+    let middle_y = total.y + TAB_BAR_HEIGHT;
 
     // Determine grid and detail panel layout
     let (grid_area, detail_panel) = if has_selection
@@ -118,12 +130,10 @@ fn calculate_tile_rects(
 
     let cols = columns.max(1);
     let col_width = grid.width / cols as u16;
-    let min_tile_height: u16 = 5;
-    let max_tile_height: u16 = 14; // title(1) + border(2) + ~11 preview lines
 
     let total_rows = total_grid_rows(tile_count, cols as u8);
     let tile_height = (grid.height / total_rows as u16)
-        .clamp(min_tile_height, max_tile_height);
+        .clamp(MIN_TILE_HEIGHT, MAX_TILE_HEIGHT);
 
     let mut tile_rects = vec![];
 
