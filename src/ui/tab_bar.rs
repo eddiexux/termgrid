@@ -3,7 +3,7 @@ use ratatui::{
     layout::Rect,
     style::{Color, Modifier, Style},
     text::{Line, Span},
-    widgets::Paragraph,
+    widgets::{Block, Borders, Paragraph},
     Frame,
 };
 
@@ -54,6 +54,11 @@ pub fn render(
     }
 
     let line = Line::from(spans);
-    let para = Paragraph::new(line);
+    let block = Block::default()
+        .borders(Borders::BOTTOM)
+        .border_style(Style::default().fg(Color::DarkGray));
+    let para = Paragraph::new(line)
+        .style(Style::default().bg(Color::Indexed(236))) // dark background
+        .block(block);
     frame.render_widget(para, area);
 }

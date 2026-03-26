@@ -49,6 +49,10 @@ pub struct App {
     event_tx: mpsc::Sender<AppEvent>,
     event_rx: mpsc::Receiver<AppEvent>,
     should_quit: bool,
+    /// Last computed layout for mouse hit testing.
+    last_layout: Option<layout::LayoutResult>,
+    /// Tile IDs in the order they appear in the grid (for mouse click mapping).
+    last_filtered_ids: Vec<crate::tile::TileId>,
 }
 
 impl App {
@@ -65,6 +69,8 @@ impl App {
             event_tx,
             event_rx,
             should_quit: false,
+            last_layout: None,
+            last_filtered_ids: Vec::new(),
         }
     }
 
@@ -120,9 +126,26 @@ impl App {
             let detail_width = self.config.layout.detail_panel_width;
             let filtered_count = self.tile_manager.filtered_tiles(&self.active_tab).len();
 
+            let filtered_ids: Vec<TileId> = self.tile_manager
+                .filtered_tiles(&self.active_tab)
+                .iter()
+                .map(|t| t.id)
+                .collect();
+
+            let layout_result = layout::calculate_layout(
+                ratatui::layout::Rect::new(0, 0, 1, 1), // placeholder, updated below
+                columns,
+                filtered_count,
+                has_selection,
+                detail_width,
+                scroll_offset,
+            );
+
+            // Draw and capture real layout
+            let mut captured_layout = layout_result;
             terminal.draw(|frame| {
                 let total = frame.area();
-                let layout_result = layout::calculate_layout(
+                captured_layout = layout::calculate_layout(
                     total,
                     columns,
                     filtered_count,
@@ -132,7 +155,7 @@ impl App {
                 );
                 ui::render(
                     frame,
-                    &layout_result,
+                    &captured_layout,
                     &self.tile_manager,
                     &tab_entries,
                     &self.active_tab,
@@ -140,6 +163,9 @@ impl App {
                     columns,
                 );
             })?;
+
+            self.last_layout = Some(captured_layout);
+            self.last_filtered_ids = filtered_ids;
 
             // Wait for next event
             match self.event_rx.recv().await {
@@ -172,20 +198,19 @@ impl App {
                     return;
                 }
 
-                // Handle column keys in Normal mode before generic dispatch
+                // Handle keys that need App-level access in Normal mode
                 if self.mode == AppMode::Normal {
                     use crossterm::event::KeyCode;
                     match key.code {
-                        KeyCode::Char('1') => {
-                            self.columns = 1;
-                            return;
-                        }
-                        KeyCode::Char('2') => {
-                            self.columns = 2;
-                            return;
-                        }
-                        KeyCode::Char('3') => {
-                            self.columns = 3;
+                        KeyCode::Char('1') => { self.columns = 1; return; }
+                        KeyCode::Char('2') => { self.columns = 2; return; }
+                        KeyCode::Char('3') => { self.columns = 3; return; }
+                        KeyCode::Char('n') => {
+                            // Create tile in current directory (skip project selector for MVP)
+                            let cwd = std::env::current_dir().unwrap_or_default();
+                            if let Ok(id) = self.spawn_tile(&cwd) {
+                                self.tile_manager.select(id);
+                            }
                             return;
                         }
                         _ => {}
@@ -206,12 +231,7 @@ impl App {
                 }
             }
             AppEvent::Crossterm(CEvent::Mouse(mouse)) => {
-                input::handle_mouse(
-                    mouse,
-                    &mut self.mode,
-                    &mut self.tile_manager,
-                    &mut self.active_tab,
-                );
+                self.handle_mouse(mouse);
             }
             AppEvent::Crossterm(CEvent::Resize(_cols, _rows)) => {
                 // Terminal will re-render on next loop iteration
@@ -230,6 +250,64 @@ impl App {
             AppEvent::Tick => {
                 self.poll_tile_states();
             }
+        }
+    }
+
+    fn handle_mouse(&mut self, mouse: crossterm::event::MouseEvent) {
+        use crossterm::event::MouseEventKind;
+
+        let layout = match &self.last_layout {
+            Some(l) => l,
+            None => return,
+        };
+
+        let x = mouse.column;
+        let y = mouse.row;
+
+        match mouse.kind {
+            MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                // Click on tab bar?
+                if y >= layout.tab_bar.y && y < layout.tab_bar.y + layout.tab_bar.height {
+                    // Simple: cycle to next tab on any tab bar click
+                    let tab_entries = self.compute_tab_entries();
+                    self.active_tab = tab::next_tab(&self.active_tab, &tab_entries);
+                    return;
+                }
+
+                // Click on a tile card?
+                for (i, rect) in layout.tile_rects.iter().enumerate() {
+                    if x >= rect.x && x < rect.x + rect.width
+                        && y >= rect.y && y < rect.y + rect.height
+                    {
+                        if let Some(&tile_id) = self.last_filtered_ids.get(i) {
+                            self.tile_manager.select(tile_id);
+                            self.mode = AppMode::Normal;
+                        }
+                        return;
+                    }
+                }
+
+                // Click on detail panel → stay in current state
+                // Click elsewhere → deselect
+                if layout.detail_panel.is_none()
+                    || !layout.detail_panel.is_some_and(|d| {
+                        x >= d.x && x < d.x + d.width && y >= d.y && y < d.y + d.height
+                    })
+                {
+                    self.tile_manager.deselect();
+                }
+            }
+            // Note: crossterm doesn't support double-click detection.
+            // Use 'i' or Enter to enter Insert mode after clicking to select.
+            MouseEventKind::ScrollUp => {
+                if self.scroll_offset > 0 {
+                    self.scroll_offset -= 1;
+                }
+            }
+            MouseEventKind::ScrollDown => {
+                self.scroll_offset += 1;
+            }
+            _ => {}
         }
     }
 

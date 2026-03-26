@@ -33,12 +33,13 @@ pub fn calculate_layout(
     // Clamp columns to valid range
     let columns = columns.clamp(1, 3);
 
-    // Tab bar at top
+    // Tab bar at top (2 lines: content + bottom border)
+    let tab_bar_height = 2u16;
     let tab_bar = Rect {
         x: total.x,
         y: total.y,
         width: total.width,
-        height: 1,
+        height: tab_bar_height,
     };
 
     // Status bar at bottom
@@ -50,8 +51,8 @@ pub fn calculate_layout(
     };
 
     // Middle area between tab bar and status bar
-    let middle_height = total.height.saturating_sub(2).max(1);
-    let middle_y = total.y + 1;
+    let middle_height = total.height.saturating_sub(tab_bar_height + 1).max(1);
+    let middle_y = total.y + tab_bar_height;
 
     // Determine grid and detail panel layout
     let (grid_area, detail_panel) = if has_selection
@@ -118,9 +119,11 @@ fn calculate_tile_rects(
     let cols = columns.max(1);
     let col_width = grid.width / cols as u16;
     let min_tile_height: u16 = 5;
+    let max_tile_height: u16 = 14; // title(1) + border(2) + ~11 preview lines
 
     let total_rows = total_grid_rows(tile_count, cols as u8);
-    let tile_height = (grid.height / total_rows as u16).max(min_tile_height);
+    let tile_height = (grid.height / total_rows as u16)
+        .clamp(min_tile_height, max_tile_height);
 
     let mut tile_rects = vec![];
 
@@ -174,9 +177,9 @@ mod tests {
         let total = Rect::new(0, 0, 120, 40);
         let result = calculate_layout(total, 2, 4, false, 45, 0);
 
-        // Tab bar should be 1 line at top
+        // Tab bar at top (2 lines: content + border)
         assert_eq!(result.tab_bar.y, 0);
-        assert_eq!(result.tab_bar.height, 1);
+        assert_eq!(result.tab_bar.height, 2);
         assert_eq!(result.tab_bar.width, 120);
 
         // Status bar should be 1 line at bottom
@@ -184,9 +187,9 @@ mod tests {
         assert_eq!(result.status_bar.height, 1);
         assert_eq!(result.status_bar.width, 120);
 
-        // Grid area should be between tab and status bars
-        assert_eq!(result.grid_area.y, 1);
-        assert_eq!(result.grid_area.height, 38);
+        // Grid area should be between tab bar and status bar
+        assert_eq!(result.grid_area.y, 2);
+        assert_eq!(result.grid_area.height, 37);
 
         // No detail panel without selection
         assert!(result.detail_panel.is_none());
