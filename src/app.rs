@@ -427,8 +427,7 @@ impl App {
                             && y >= detail.y
                             && y < detail.y + detail.height
                         {
-                            self.detail_scroll_offset =
-                                self.detail_scroll_offset.saturating_sub(3);
+                            self.detail_scroll_offset = self.detail_scroll_offset.saturating_sub(3);
                             return;
                         }
                     }

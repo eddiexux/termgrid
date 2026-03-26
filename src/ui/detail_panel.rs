@@ -65,7 +65,10 @@ pub fn render(
 
     // Line 2: keyboard hints (with scroll indicator if scrolled)
     let hint_text = if scroll_back > 0 {
-        format!("Esc close │ ↑↓ switch │ i insert  [SCROLL -{}]", scroll_back)
+        format!(
+            "Esc close │ ↑↓ switch │ i insert  [SCROLL -{}]",
+            scroll_back
+        )
     } else {
         "Esc close │ ↑↓ switch │ i insert".to_string()
     };
