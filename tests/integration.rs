@@ -44,11 +44,11 @@ fn test_layout_various_configs() {
     use ratatui::layout::Rect;
 
     // Minimal terminal
-    let layout = termgrid::layout::calculate_layout(Rect::new(0, 0, 40, 10), 1, 2, false, 45, 0);
+    let layout = termgrid::layout::calculate_layout(Rect::new(0, 0, 40, 10), 1, 2, 45, 0);
     assert!(layout.tile_rects.len() <= 2);
 
-    // Wide terminal with detail panel
-    let layout = termgrid::layout::calculate_layout(Rect::new(0, 0, 200, 50), 3, 9, true, 45, 0);
+    // Wide terminal — detail panel always shown
+    let layout = termgrid::layout::calculate_layout(Rect::new(0, 0, 200, 50), 3, 9, 45, 0);
     assert!(layout.detail_panel.is_some());
 }
 

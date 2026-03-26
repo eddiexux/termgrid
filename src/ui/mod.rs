@@ -75,9 +75,10 @@ pub fn render(
     // Render tile cards, collect cursor from selected tile's card
     let mut tile_card_cursor = None;
     for (i, rect) in layout.tile_rects.iter().enumerate() {
-        if let Some(tile) = filtered.get(i) {
+        let absolute_idx = layout.first_visible_tile + i;
+        if let Some(tile) = filtered.get(absolute_idx) {
             let is_selected = selected_id == Some(tile.id);
-            let label = index_labels.get(i).and_then(|l| l.as_deref());
+            let label = index_labels.get(absolute_idx).and_then(|l| l.as_deref());
             let card_cursor = tile_card::render(frame, *rect, tile, is_selected, label);
             if is_selected {
                 tile_card_cursor = card_cursor;
@@ -85,28 +86,37 @@ pub fn render(
         }
     }
 
-    // Render detail panel if selected, get cursor and actual terminal size
+    // Render detail panel — always render when layout provides it
     let mut cursor_pos = None;
     let mut detail_terminal_size = None;
-    if let (Some(detail_area), Some(tile)) = (layout.detail_panel, tile_manager.selected()) {
-        let selected_label = selected_id.and_then(|sid| {
-            filtered
-                .iter()
-                .position(|t| t.id == sid)
-                .and_then(|i| index_labels.get(i))
-                .and_then(|l| l.as_deref())
-        });
-        let result = detail_panel::render(
-            frame,
-            detail_area,
-            tile,
-            selected_label,
-            selection.as_ref(),
-            detail_scroll_back,
-        );
-        cursor_pos = result.cursor_pos;
-        if result.terminal_size.0 > 0 && result.terminal_size.1 > 0 {
-            detail_terminal_size = Some(result.terminal_size);
+    if let Some(detail_area) = layout.detail_panel {
+        if let Some(tile) = tile_manager.selected() {
+            let selected_label = selected_id.and_then(|sid| {
+                filtered
+                    .iter()
+                    .position(|t| t.id == sid)
+                    .and_then(|i| index_labels.get(i))
+                    .and_then(|l| l.as_deref())
+            });
+            let result = detail_panel::render(
+                frame,
+                detail_area,
+                tile,
+                selected_label,
+                selection.as_ref(),
+                detail_scroll_back,
+            );
+            cursor_pos = result.cursor_pos;
+            if result.terminal_size.0 > 0 && result.terminal_size.1 > 0 {
+                detail_terminal_size = Some(result.terminal_size);
+            }
+        } else {
+            // No tile selected — render empty detail panel with border
+            let block = ratatui::widgets::Block::default()
+                .borders(ratatui::widgets::Borders::LEFT)
+                .border_set(ratatui::symbols::border::PLAIN)
+                .border_style(ratatui::style::Style::default().fg(ratatui::style::Color::DarkGray));
+            frame.render_widget(block, detail_area);
         }
     }
 

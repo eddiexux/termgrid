@@ -51,6 +51,14 @@ impl VteState {
         self.parser.set_size(rows, cols);
     }
 
+    /// Set scrollback viewing offset. When > 0, `cell()` returns content
+    /// from the scrollback buffer (older history).
+    /// Clamped to screen row count (vt100 replaces screen rows 1:1 with scrollback rows).
+    pub fn set_scrollback(&mut self, rows: usize) {
+        let max = self.parser.screen().size().0 as usize;
+        self.parser.set_scrollback(rows.min(max));
+    }
+
     /// Get terminal dimensions.
     pub fn cols(&self) -> u16 {
         self.parser.screen().size().1
@@ -114,6 +122,12 @@ impl VteState {
     /// Get visible rows with scroll offset for detail panel.
     /// scroll_back = 0 means current view (following cursor).
     /// scroll_back > 0 means scrolled N rows into history.
+    /// Get visible rows with scrollback support.
+    ///
+    /// The caller must call `set_scrollback(N)` before this method if N > 0,
+    /// and reset it to 0 after rendering. When scrollback > 0, vt100's
+    /// `cell()` automatically returns content from the scrollback buffer,
+    /// so we just read all visible rows from top to bottom.
     pub fn visible_rows_with_scroll(
         &self,
         max_rows: usize,
@@ -124,21 +138,17 @@ impl VteState {
             return self.visible_rows_with_cursor(max_rows, max_cols);
         }
 
-        let screen = self.parser.screen();
-        let (total_rows, _) = screen.size();
-        let (cursor_row, _) = screen.cursor_position();
-        let total = total_rows as usize;
+        // Scrollback is pre-set by caller via set_scrollback().
+        // vt100's visible_rows() already includes scrollback content.
+        // Just read all rows from top.
+        let total = self.parser.screen().size().0 as usize;
+        let rows_to_show = max_rows.min(total);
 
-        // Scrolled view: show rows ending scroll_back rows before the current cursor end
-        let cursor_end = cursor_row as usize + 1;
-        let end_row = cursor_end.saturating_sub(scroll_back).max(max_rows);
-        let start_row = end_row.saturating_sub(max_rows);
-
-        let rows = (start_row..end_row.min(total))
+        let rows = (0..rows_to_show)
             .map(|r| self.row_cells(r as u16, max_cols))
             .collect();
 
-        (start_row, rows)
+        (0, rows)
     }
 
     /// Get all visible rows for the detail panel, ensuring cursor is visible.
@@ -391,5 +401,62 @@ mod tests {
                                      // After leaving alt screen, content should be back
         let cell = vte.cell_at(0, 0);
         assert_eq!(cell.ch, 'm'); // 'm' from "main screen"
+    }
+
+    #[test]
+    fn test_scroll_back_changes_visible_rows() {
+        let mut vte = VteState::new(20, 24);
+        // Fill terminal with enough content to create scrollback history.
+        // 50 lines in a 24-row terminal → 26+ lines go to scrollback buffer.
+        for i in 0..50 {
+            vte.process(format!("line{:02}\r\n", i).as_bytes());
+        }
+
+        // Without scroll: shows current screen (near cursor)
+        let (_, rows_no_scroll) = vte.visible_rows_with_scroll(24, 20, 0);
+
+        // With scroll_back=10: set scrollback, read, reset
+        vte.set_scrollback(10);
+        let (_, rows_scrolled) = vte.visible_rows_with_scroll(24, 20, 10);
+        vte.set_scrollback(0);
+
+        // Both should return full screens
+        assert_eq!(rows_no_scroll.len(), 24);
+        assert_eq!(rows_scrolled.len(), 24);
+
+        // Content should differ — scrolled view shows older history
+        let first_row_no_scroll: String = rows_no_scroll[0].iter().map(|c| c.ch).collect();
+        let first_row_scrolled: String = rows_scrolled[0].iter().map(|c| c.ch).collect();
+        assert_ne!(
+            first_row_no_scroll, first_row_scrolled,
+            "scrolled view should show different (older) content"
+        );
+    }
+
+    #[test]
+    fn test_scroll_back_at_maximum() {
+        let mut vte = VteState::new(20, 24);
+        // Fill with lots of content (100 lines → 76+ in scrollback)
+        for i in 0..100 {
+            vte.process(format!("L{:02}\r\n", i).as_bytes());
+        }
+
+        // Scroll back maximum (clamped to screen height = 24)
+        // This replaces all 24 screen rows with the 24 most recent scrollback rows
+        vte.set_scrollback(10000); // clamped to 24 internally
+        let (start, rows) = vte.visible_rows_with_scroll(24, 20, 24);
+        vte.set_scrollback(0);
+
+        assert_eq!(start, 0);
+        assert_eq!(rows.len(), 24, "should return full screen of scrollback rows");
+
+        // Content should be from history, not current screen
+        let first_content: String = rows[0].iter().map(|c| c.ch).collect();
+        let no_scroll_rows = vte.visible_rows_with_scroll(24, 20, 0).1;
+        let first_no_scroll: String = no_scroll_rows[0].iter().map(|c| c.ch).collect();
+        assert_ne!(
+            first_content, first_no_scroll,
+            "max scrollback should show different content than current screen"
+        );
     }
 }

@@ -157,7 +157,6 @@ impl App {
         loop {
             // Collect values before the draw borrow
             let tab_entries = self.compute_tab_entries();
-            let has_selection = self.tile_manager.selected_id().is_some();
             let columns = self.columns;
             let scroll_offset = self.scroll_offset;
             let detail_width = self.config.layout.detail_panel_width;
@@ -174,10 +173,16 @@ impl App {
                 ratatui::layout::Rect::new(0, 0, 1, 1), // placeholder, updated below
                 columns,
                 filtered_count,
-                has_selection,
                 detail_width,
                 scroll_offset,
             );
+
+            // Set scrollback on selected tile BEFORE draw (needs &mut, can't do inside draw closure)
+            if self.detail_scroll_offset > 0 {
+                if let Some(tile) = self.tile_manager.selected_mut() {
+                    tile.vte.set_scrollback(self.detail_scroll_offset);
+                }
+            }
 
             // Draw and capture real layout + actual terminal area size
             let mut captured_layout = layout_result;
@@ -188,7 +193,6 @@ impl App {
                     total,
                     columns,
                     filtered_count,
-                    has_selection,
                     detail_width,
                     scroll_offset,
                 );
@@ -205,6 +209,13 @@ impl App {
                 );
                 actual_terminal_size = render_result.detail_terminal_size;
             })?;
+
+            // Reset scrollback after draw
+            if self.detail_scroll_offset > 0 {
+                if let Some(tile) = self.tile_manager.selected_mut() {
+                    tile.vte.set_scrollback(0);
+                }
+            }
 
             self.last_layout = Some(captured_layout.clone());
             self.last_filtered_ids = filtered_ids;
@@ -401,38 +412,68 @@ impl App {
                 }
             }
             MouseEventKind::ScrollUp => {
-                // If in detail panel area, scroll history
                 if let Some(ref layout) = self.last_layout {
+                    let grid = layout.grid_area;
+                    // Detail panel area → scroll history back
                     if let Some(detail) = layout.detail_panel {
                         if x >= detail.x
                             && x < detail.x + detail.width
                             && y >= detail.y
                             && y < detail.y + detail.height
                         {
-                            self.detail_scroll_offset += 3;
+                            // Clamp to max scrollback (screen rows) to prevent ghost offset
+                            let max_scroll = self
+                                .tile_manager
+                                .selected()
+                                .map(|t| t.vte.rows() as usize)
+                                .unwrap_or(0);
+                            self.detail_scroll_offset =
+                                (self.detail_scroll_offset + 3).min(max_scroll);
                             return;
                         }
                     }
-                }
-                // Otherwise scroll grid
-                if self.scroll_offset > 0 {
-                    self.scroll_offset -= 1;
+                    // Grid area → scroll grid up (only if scrolled down)
+                    if x >= grid.x
+                        && x < grid.x + grid.width
+                        && y >= grid.y
+                        && y < grid.y + grid.height
+                        && self.scroll_offset > 0
+                    {
+                        self.scroll_offset -= 1;
+                    }
                 }
             }
             MouseEventKind::ScrollDown => {
                 if let Some(ref layout) = self.last_layout {
+                    let grid = layout.grid_area;
+                    // Detail panel area → scroll history forward
                     if let Some(detail) = layout.detail_panel {
                         if x >= detail.x
                             && x < detail.x + detail.width
                             && y >= detail.y
                             && y < detail.y + detail.height
                         {
-                            self.detail_scroll_offset = self.detail_scroll_offset.saturating_sub(3);
+                            self.detail_scroll_offset =
+                                self.detail_scroll_offset.saturating_sub(3);
                             return;
                         }
                     }
+                    tracing::debug!(
+                        "ScrollDown: mouse=({},{}) grid=({},{} {}x{}) scroll={}/{} tiles={}",
+                        x, y, grid.x, grid.y, grid.width, grid.height,
+                        self.scroll_offset, layout.max_scroll_offset,
+                        layout.tile_rects.len(),
+                    );
+                    // Grid area → scroll grid down (bounded by max)
+                    if x >= grid.x
+                        && x < grid.x + grid.width
+                        && y >= grid.y
+                        && y < grid.y + grid.height
+                        && self.scroll_offset < layout.max_scroll_offset
+                    {
+                        self.scroll_offset += 1;
+                    }
                 }
-                self.scroll_offset += 1;
             }
             _ => {}
         }
@@ -464,7 +505,9 @@ impl App {
         // Click on a tile card?
         for (i, rect) in layout.tile_rects.iter().enumerate() {
             if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
-                if let Some(&tile_id) = self.last_filtered_ids.get(i) {
+                // Map visible tile index to absolute filtered index
+                let absolute_idx = layout.first_visible_tile + i;
+                if let Some(&tile_id) = self.last_filtered_ids.get(absolute_idx) {
                     let prev_selected = self.tile_manager.selected_id();
                     self.tile_manager.select(tile_id);
                     // Reset detail scroll when switching to a different tile
@@ -491,8 +534,7 @@ impl App {
             }
         }
 
-        // Click elsewhere → deselect
-        self.tile_manager.deselect();
+        // Click elsewhere → keep current selection (layout stays stable)
     }
 
     fn copy_selection_to_clipboard(&self, sel: &TextSelection) {
