@@ -5,3 +5,4 @@ pub mod layout;
 pub mod pty;
 pub mod process;
 pub mod screen;
+pub mod tab;
