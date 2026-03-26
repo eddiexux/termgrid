@@ -11,6 +11,9 @@ pub struct Session {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct TileSession {
     pub cwd: PathBuf,
+    /// Index into scrollback files (scrollback_0.bin, scrollback_1.bin, ...).
+    /// None if no scrollback was saved.
+    pub scrollback_index: Option<usize>,
 }
 
 impl Session {
@@ -19,6 +22,14 @@ impl Session {
             .unwrap_or_else(|| PathBuf::from("~/.config"))
             .join("termgrid")
             .join("sessions.json")
+    }
+
+    /// Directory for scrollback files.
+    pub fn scrollback_dir() -> PathBuf {
+        dirs::config_dir()
+            .unwrap_or_else(|| PathBuf::from("~/.config"))
+            .join("termgrid")
+            .join("scrollback")
     }
 
     pub fn save(&self, path: &Path) -> anyhow::Result<()> {
@@ -37,6 +48,34 @@ impl Session {
         tracing::info!("Session loaded: {} tiles", session.tiles.len());
         Some(session)
     }
+
+    /// Save scrollback data for a tile. Returns the index for TileSession.
+    pub fn save_scrollback(index: usize, data: &[u8]) -> anyhow::Result<()> {
+        let dir = Self::scrollback_dir();
+        std::fs::create_dir_all(&dir)?;
+        let path = dir.join(format!("scrollback_{}.bin", index));
+        std::fs::write(&path, data)?;
+        tracing::debug!("Saved scrollback {}: {} bytes", index, data.len());
+        Ok(())
+    }
+
+    /// Load scrollback data for a tile.
+    pub fn load_scrollback(index: usize) -> Option<Vec<u8>> {
+        let path = Self::scrollback_dir().join(format!("scrollback_{}.bin", index));
+        let data = std::fs::read(&path).ok()?;
+        tracing::debug!("Loaded scrollback {}: {} bytes", index, data.len());
+        Some(data)
+    }
+
+    /// Clean up old scrollback files.
+    pub fn clean_scrollback() {
+        let dir = Self::scrollback_dir();
+        if let Ok(entries) = std::fs::read_dir(&dir) {
+            for entry in entries.flatten() {
+                let _ = std::fs::remove_file(entry.path());
+            }
+        }
+    }
 }
 
 #[cfg(test)]
@@ -51,8 +90,8 @@ mod tests {
 
         let session = Session {
             tiles: vec![
-                TileSession { cwd: PathBuf::from("/tmp") },
-                TileSession { cwd: PathBuf::from("/home/user") },
+                TileSession { cwd: PathBuf::from("/tmp"), scrollback_index: None },
+                TileSession { cwd: PathBuf::from("/home/user"), scrollback_index: Some(0) },
             ],
             columns: 2,
             active_tab: "ALL".into(),

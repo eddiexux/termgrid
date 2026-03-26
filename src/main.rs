@@ -30,7 +30,7 @@ fn init_logging() -> PathBuf {
     tracing_subscriber::fmt()
         .with_writer(file_appender)
         .with_env_filter(
-            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info"))
+            EnvFilter::try_from_default_env().unwrap_or_else(|_| EnvFilter::new("info")),
         )
         .with_ansi(false)
         .init();
@@ -51,33 +51,54 @@ async fn main() -> anyhow::Result<()> {
     let mut app = App::new(config);
 
     if let Some(path) = cli.path {
-        // Explicit path: open tile there
         if path.exists() {
             app.spawn_tile(&path)?;
         }
     } else if !cli.fresh {
-        // No path, no --fresh: auto-restore last session
+        // Auto-restore last session with scrollback
         if let Some(session) = Session::load(&Session::session_path()) {
             for tile_session in &session.tiles {
                 if tile_session.cwd.exists() {
-                    let _ = app.spawn_tile(&tile_session.cwd);
+                    if let Ok(id) = app.spawn_tile(&tile_session.cwd) {
+                        // Restore scrollback into the tile's VTE
+                        if let Some(idx) = tile_session.scrollback_index {
+                            if let Some(scrollback_data) = Session::load_scrollback(idx) {
+                                app.restore_tile_scrollback(id, &scrollback_data);
+                            }
+                        }
+                    }
                 }
             }
             app.set_columns(session.columns);
         }
     }
-    // --fresh or no session: empty dashboard, press 'n' to create
 
     app.run().await?;
 
-    // Save session on exit (capture tile CWDs before they're dropped)
+    // Save session with scrollback
+    Session::clean_scrollback();
+    let tiles = app.tile_manager_ref().tiles();
+    let tile_sessions: Vec<termgrid::session::TileSession> = tiles
+        .iter()
+        .enumerate()
+        .map(|(i, t)| {
+            // Save scrollback content
+            let scrollback_data = t.vte.contents_formatted();
+            let scrollback_index = if !scrollback_data.is_empty() {
+                let _ = Session::save_scrollback(i, &scrollback_data);
+                Some(i)
+            } else {
+                None
+            };
+            termgrid::session::TileSession {
+                cwd: t.cwd.clone(),
+                scrollback_index,
+            }
+        })
+        .collect();
+
     let session = Session {
-        tiles: app
-            .tile_manager_ref()
-            .tiles()
-            .iter()
-            .map(|t| termgrid::session::TileSession { cwd: t.cwd.clone() })
-            .collect(),
+        tiles: tile_sessions,
         columns: app.columns(),
         active_tab: "ALL".into(),
     };

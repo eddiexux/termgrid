@@ -65,6 +65,12 @@ impl VteState {
         self.parser.screen().cursor_position()
     }
 
+    /// Export screen content with ANSI formatting for session persistence.
+    /// Can be fed back into process() to restore visual state.
+    pub fn contents_formatted(&self) -> Vec<u8> {
+        self.parser.screen().contents_formatted()
+    }
+
     /// Whether cursor is visible.
     pub fn cursor_visible(&self) -> bool {
         !self.parser.screen().hide_cursor()

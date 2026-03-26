@@ -451,6 +451,14 @@ impl App {
         &self.tile_manager
     }
 
+    /// Restore scrollback content into a tile's VTE (for session restore).
+    pub fn restore_tile_scrollback(&mut self, tile_id: TileId, data: &[u8]) {
+        if let Some(tile) = self.tile_manager.get_mut(tile_id) {
+            tile.vte.process(data);
+            tracing::debug!("Restored {} bytes scrollback for tile {}", data.len(), tile_id.0);
+        }
+    }
+
     pub fn columns(&self) -> u8 {
         self.columns
     }

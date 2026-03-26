@@ -111,9 +111,11 @@ fn test_session_round_trip() {
         tiles: vec![
             TileSession {
                 cwd: PathBuf::from("/tmp/a"),
+                scrollback_index: None,
             },
             TileSession {
                 cwd: PathBuf::from("/tmp/b"),
+                scrollback_index: None,
             },
         ],
         columns: 3,
