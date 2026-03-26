@@ -56,8 +56,10 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool, ind
         let end_row = (cursor_row as usize + 1).min(total_rows);
         let start_row = end_row.saturating_sub(preview_height);
 
-        // Only show visual cursor on the selected tile
-        let cursor_visible = is_selected && screen.cursor_visible();
+        // Visual cursor in tile card: always show on selected tile.
+        // Don't depend on terminal cursor visibility state (shell may temporarily
+        // hide cursor during prompt rendering, causing flickering).
+        let cursor_visible = is_selected;
 
         let text_lines: Vec<Line> = (start_row..end_row)
             .enumerate()
@@ -95,8 +97,8 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool, ind
         let preview_para = Paragraph::new(Text::from(text_lines));
         frame.render_widget(preview_para, preview_area);
 
-        // Compute cursor position in the preview area
-        if screen.cursor_visible() && cursor_row as usize >= start_row && cursor_col < preview_width {
+        // Compute cursor position in the preview area (for hardware cursor fallback)
+        if is_selected && cursor_row as usize >= start_row && cursor_col < preview_width {
             let screen_row = (cursor_row as usize - start_row) as u16;
             if screen_row < preview_area.height {
                 cursor_pos = Some((
