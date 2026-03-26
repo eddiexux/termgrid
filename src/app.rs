@@ -455,6 +455,9 @@ impl App {
     pub fn restore_tile_scrollback(&mut self, tile_id: TileId, data: &[u8]) {
         if let Some(tile) = self.tile_manager.get_mut(tile_id) {
             tile.vte.process(data);
+            // Ensure cursor is visible and at a sane position after restore.
+            // The restored content may have left cursor hidden or at an old position.
+            tile.vte.process(b"\x1b[?25h");  // show cursor
             tracing::debug!("Restored {} bytes scrollback for tile {}", data.len(), tile_id.0);
         }
     }
