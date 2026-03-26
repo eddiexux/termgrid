@@ -1,7 +1,7 @@
 use serde::Deserialize;
 use std::path::{Path, PathBuf};
 
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(default)]
 pub struct Config {
     pub layout: LayoutConfig,
@@ -35,17 +35,6 @@ pub struct TerminalConfig {
 #[serde(default)]
 pub struct KeysConfig {
     pub exit_insert: String,
-}
-
-impl Default for Config {
-    fn default() -> Self {
-        Self {
-            layout: LayoutConfig::default(),
-            scan: ScanConfig::default(),
-            terminal: TerminalConfig::default(),
-            keys: KeysConfig::default(),
-        }
-    }
 }
 
 impl Default for LayoutConfig {

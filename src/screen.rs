@@ -100,7 +100,7 @@ impl ScreenBuffer {
 
     /// Return the last N lines from the visible grid (for mini tile rendering).
     pub fn last_n_lines(&self, n: usize) -> Vec<&[Cell]> {
-        let start = if n >= self.rows { 0 } else { self.rows - n };
+        let start = self.rows.saturating_sub(n);
         self.grid[start..].iter().map(|row| row.as_slice()).collect()
     }
 
@@ -357,11 +357,7 @@ impl ScreenBuffer {
     /// Handle SGR (Select Graphic Rendition) parameters to update current style.
     fn handle_sgr(&mut self, params: &vte::Params) {
         let mut iter = params.iter();
-        loop {
-            let subparams = match iter.next() {
-                Some(s) => s,
-                None => break,
-            };
+        while let Some(subparams) = iter.next() {
             let p0 = subparams.first().copied().unwrap_or(0) as u32;
             match p0 {
                 0 => self.reset_style(),
@@ -506,7 +502,7 @@ impl vte::Perform for ScreenBuffer {
         match byte {
             0x08 => self.backspace(),
             0x09 => self.tab(),
-            0x0A | 0x0B | 0x0C => self.advance_row(),
+            0x0A..=0x0C => self.advance_row(),
             0x0D => self.carriage_return(),
             _ => {}
         }
@@ -928,8 +924,8 @@ mod vte_tests {
         vte.process(b"\x1b[K");
         let row = &vte.screen.visible_lines()[0];
         // Cols 0-4 should be spaces (never written), cols 5+ should be erased
-        for c in 5..80 {
-            assert_eq!(row[c].ch, ' ', "col {} should be space", c);
+        for (c, cell) in row.iter().enumerate().take(80).skip(5) {
+            assert_eq!(cell.ch, ' ', "col {} should be space", c);
         }
     }
 

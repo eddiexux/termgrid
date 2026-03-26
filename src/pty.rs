@@ -66,7 +66,7 @@ impl PtyHandle {
 
     #[cfg(unix)]
     pub fn master_fd(&self) -> Option<i32> {
-        self.master.as_raw_fd().map(|fd| fd as i32)
+        self.master.as_raw_fd()
     }
 
     pub fn wait(&mut self) -> Result<bool> {

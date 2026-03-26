@@ -162,7 +162,7 @@ pub fn key_event_to_bytes(key: &KeyEvent) -> Vec<u8> {
             if key.modifiers.contains(KeyModifiers::CONTROL) {
                 // Control codes: Ctrl+a = 1, Ctrl+b = 2, ...
                 let lower = c.to_ascii_lowercase();
-                if lower >= 'a' && lower <= 'z' {
+                if lower.is_ascii_lowercase() {
                     vec![lower as u8 - b'a' + 1]
                 } else if lower == '[' {
                     vec![0x1b]

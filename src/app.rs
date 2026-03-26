@@ -54,7 +54,7 @@ pub struct App {
 impl App {
     pub fn new(config: Config) -> Self {
         let (event_tx, event_rx) = mpsc::channel(256);
-        let columns = config.layout.default_columns.max(1).min(3);
+        let columns = config.layout.default_columns.clamp(1, 3);
         App {
             config,
             tile_manager: TileManager::new(),

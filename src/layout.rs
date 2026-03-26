@@ -31,7 +31,7 @@ pub fn calculate_layout(
     scroll_offset: usize,
 ) -> LayoutResult {
     // Clamp columns to valid range
-    let columns = columns.max(1).min(3);
+    let columns = columns.clamp(1, 3);
 
     // Tab bar at top
     let tab_bar = Rect {
@@ -59,9 +59,8 @@ pub fn calculate_layout(
         && detail_width_pct > 0
         && detail_width_pct < 100
     {
-        let detail_width = ((total.width as u16 * detail_width_pct) / 100) as u16;
-        let detail_width = detail_width.max(1) as u16;
-        let grid_width = total.width.saturating_sub(detail_width as u16);
+        let detail_width = ((total.width * detail_width_pct) / 100).max(1);
+        let grid_width = total.width.saturating_sub(detail_width);
 
         let grid = Rect {
             x: total.x,
@@ -73,7 +72,7 @@ pub fn calculate_layout(
         let detail = Rect {
             x: total.x + grid_width,
             y: middle_y,
-            width: detail_width as u16,
+            width: detail_width,
             height: middle_height,
         };
 
@@ -118,14 +117,10 @@ fn calculate_tile_rects(
 
     let cols = columns.max(1);
     let col_width = grid.width / cols as u16;
-    let min_tile_height = 5;
+    let min_tile_height: u16 = 5;
 
     let total_rows = total_grid_rows(tile_count, cols as u8);
-    let tile_height = if grid.height / total_rows as u16 >= min_tile_height {
-        grid.height / total_rows as u16
-    } else {
-        min_tile_height as u16
-    };
+    let tile_height = (grid.height / total_rows as u16).max(min_tile_height);
 
     let mut tile_rects = vec![];
 
@@ -167,7 +162,7 @@ fn calculate_tile_rects(
 /// Calculate total number of rows needed to layout tiles
 pub fn total_grid_rows(tile_count: usize, columns: u8) -> usize {
     let cols = columns.max(1) as usize;
-    (tile_count + cols - 1) / cols
+    tile_count.div_ceil(cols)
 }
 
 #[cfg(test)]
@@ -347,7 +342,7 @@ mod tests {
         // Column 4 should be clamped to 3
         let result_4 = calculate_layout(total, 4, 9, false, 45, 0);
         // Should layout with 3 columns
-        assert!(result_4.tile_rects.len() > 0);
+        assert!(!result_4.tile_rects.is_empty());
     }
 
     #[test]

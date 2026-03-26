@@ -74,8 +74,8 @@ fn find_main_repo_name(repo: &git2::Repository) -> String {
 }
 
 fn strip_git_suffix(name: &str) -> String {
-    if name.ends_with(".git") {
-        name[..name.len() - 4].to_string()
+    if let Some(stripped) = name.strip_suffix(".git") {
+        stripped.to_string()
     } else {
         name.to_string()
     }

@@ -21,7 +21,7 @@ impl TabFilter {
         match self {
             TabFilter::All => true,
             TabFilter::Project(name) => {
-                git_context.as_ref().map_or(false, |g| g.project_name == *name)
+                git_context.as_ref().is_some_and(|g| g.project_name == *name)
             }
             TabFilter::Other => git_context.is_none(),
         }
