@@ -18,6 +18,8 @@ pub fn render(
 ) -> Option<(u16, u16)> {
     let border_color = if is_selected {
         Color::Cyan
+    } else if tile.has_unread {
+        Color::Yellow
     } else {
         Color::DarkGray
     };

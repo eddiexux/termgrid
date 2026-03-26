@@ -28,6 +28,7 @@ pub fn render(
     mode: &AppMode,
     columns: u8,
     selection: &Option<TextSelection>,
+    detail_scroll_back: usize,
 ) -> RenderResult {
     tab_bar::render(
         frame,
@@ -95,8 +96,14 @@ pub fn render(
                 .and_then(|i| index_labels.get(i))
                 .and_then(|l| l.as_deref())
         });
-        let result =
-            detail_panel::render(frame, detail_area, tile, selected_label, selection.as_ref());
+        let result = detail_panel::render(
+            frame,
+            detail_area,
+            tile,
+            selected_label,
+            selection.as_ref(),
+            detail_scroll_back,
+        );
         cursor_pos = result.cursor_pos;
         if result.terminal_size.0 > 0 && result.terminal_size.1 > 0 {
             detail_terminal_size = Some(result.terminal_size);

@@ -86,6 +86,10 @@ impl TileManager {
 
     pub fn select(&mut self, id: TileId) {
         self.selected = Some(id);
+        // Clear unread flag when tile becomes selected
+        if let Some(tile) = self.tiles.iter_mut().find(|t| t.id == id) {
+            tile.has_unread = false;
+        }
     }
 
     pub fn deselect(&mut self) {
@@ -146,7 +150,7 @@ impl TileManager {
             filtered[0]
         };
 
-        self.selected = Some(next_id);
+        self.select(next_id);
     }
 
     /// Select the previous tile in the filtered list, cycling around.
@@ -167,7 +171,7 @@ impl TileManager {
             filtered[filtered.len() - 1]
         };
 
-        self.selected = Some(prev_id);
+        self.select(prev_id);
     }
 
     /// Navigate in a grid layout with the given number of columns.
@@ -237,7 +241,7 @@ impl TileManager {
             }
         };
 
-        self.selected = Some(filtered[new_idx]);
+        self.select(filtered[new_idx]);
     }
 }
 

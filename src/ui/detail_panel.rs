@@ -22,6 +22,7 @@ pub fn render(
     tile: &Tile,
     index_label: Option<&str>,
     selection: Option<&TextSelection>,
+    scroll_back: usize,
 ) -> DetailRenderResult {
     // Render the outer block with left border as vertical separator
     let block = Block::default()
@@ -62,9 +63,14 @@ pub fn render(
     // Line 1: unified title (same format as tile card)
     header_lines.push(super::title::build_title_line(tile, index_label));
 
-    // Line 2: keyboard hints
+    // Line 2: keyboard hints (with scroll indicator if scrolled)
+    let hint_text = if scroll_back > 0 {
+        format!("Esc close │ ↑↓ switch │ i insert  [SCROLL -{}]", scroll_back)
+    } else {
+        "Esc close │ ↑↓ switch │ i insert".to_string()
+    };
     header_lines.push(Line::from(vec![Span::styled(
-        "Esc close │ ↑↓ switch │ i insert",
+        hint_text,
         Style::default().fg(Color::DarkGray),
     )]));
 
@@ -87,7 +93,7 @@ pub fn render(
         let screen = &tile.vte;
         let (cursor_row, cursor_col) = screen.cursor_position();
 
-        let (start_row, row_cells) = screen.visible_rows_with_cursor(rows, cols);
+        let (start_row, row_cells) = screen.visible_rows_with_scroll(rows, cols, scroll_back);
 
         // Helper: check if a screen-absolute coordinate falls within the selection.
         let is_selected = |screen_x: u16, screen_y: u16| -> bool {
@@ -146,11 +152,12 @@ pub fn render(
         let terminal_para = Paragraph::new(Text::from(text_lines));
         frame.render_widget(terminal_para, terminal_area);
 
-        // Always compute cursor screen position.
+        // Compute cursor screen position when not scrolled into history.
         // Don't gate on cursor_visible() — shells temporarily hide cursor during
         // prompt rendering, which would make cursor_pos None and break Insert mode.
         // The caller (ui/mod.rs) decides when to actually display the hardware cursor.
-        if cursor_row as usize >= start_row {
+        // When scroll_back > 0, user is viewing history — don't show cursor.
+        if scroll_back == 0 && cursor_row as usize >= start_row {
             let screen_row = (cursor_row as usize - start_row) as u16;
             if screen_row < terminal_area.height && cursor_col < terminal_area.width {
                 cursor_pos = Some((terminal_area.x + cursor_col, terminal_area.y + screen_row));

@@ -111,6 +111,36 @@ impl VteState {
             .collect()
     }
 
+    /// Get visible rows with scroll offset for detail panel.
+    /// scroll_back = 0 means current view (following cursor).
+    /// scroll_back > 0 means scrolled N rows into history.
+    pub fn visible_rows_with_scroll(
+        &self,
+        max_rows: usize,
+        max_cols: u16,
+        scroll_back: usize,
+    ) -> (usize, Vec<Vec<Cell>>) {
+        if scroll_back == 0 {
+            return self.visible_rows_with_cursor(max_rows, max_cols);
+        }
+
+        let screen = self.parser.screen();
+        let (total_rows, _) = screen.size();
+        let (cursor_row, _) = screen.cursor_position();
+        let total = total_rows as usize;
+
+        // Scrolled view: show rows ending scroll_back rows before the current cursor end
+        let cursor_end = cursor_row as usize + 1;
+        let end_row = cursor_end.saturating_sub(scroll_back).max(max_rows);
+        let start_row = end_row.saturating_sub(max_rows);
+
+        let rows = (start_row..end_row.min(total))
+            .map(|r| self.row_cells(r as u16, max_cols))
+            .collect();
+
+        (start_row, rows)
+    }
+
     /// Get all visible rows for the detail panel, ensuring cursor is visible.
     /// Returns (start_row, rows).
     pub fn visible_rows_with_cursor(

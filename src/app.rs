@@ -67,6 +67,8 @@ pub struct App {
     selection: Option<TextSelection>,
     /// Screen position where mouse was pressed (to distinguish click from drag).
     drag_origin: Option<(u16, u16)>,
+    /// How many rows the detail panel is scrolled back into history (0 = follow cursor).
+    detail_scroll_offset: usize,
 }
 
 impl App {
@@ -88,6 +90,7 @@ impl App {
             last_click: None,
             selection: None,
             drag_origin: None,
+            detail_scroll_offset: 0,
         }
     }
 
@@ -188,6 +191,7 @@ impl App {
                     &self.mode,
                     columns,
                     &self.selection,
+                    self.detail_scroll_offset,
                 );
                 actual_terminal_size = render_result.detail_terminal_size;
             })?;
@@ -270,6 +274,15 @@ impl App {
                             }
                             return;
                         }
+                        KeyCode::PageUp => {
+                            self.detail_scroll_offset += 10;
+                            return;
+                        }
+                        KeyCode::PageDown => {
+                            self.detail_scroll_offset =
+                                self.detail_scroll_offset.saturating_sub(10);
+                            return;
+                        }
                         _ => {}
                     }
                 }
@@ -297,10 +310,19 @@ impl App {
             }
             AppEvent::Crossterm(_) => {}
             AppEvent::PtyOutput(tile_id, data) => {
+                let selected_id = self.tile_manager.selected_id();
                 if let Some(tile) = self.tile_manager.get_mut(tile_id) {
                     tile.process_output(&data);
+                    // Mark as unread if not currently selected
+                    if selected_id != Some(tile_id) {
+                        tile.has_unread = true;
+                    }
                 } else {
                     tracing::debug!("PtyOutput for unknown tile {:?}", tile_id);
+                }
+                // Reset scroll when active tile produces output
+                if selected_id == Some(tile_id) {
+                    self.detail_scroll_offset = 0;
                 }
             }
             AppEvent::PtyExited(tile_id) => {
@@ -368,11 +390,38 @@ impl App {
                 }
             }
             MouseEventKind::ScrollUp => {
+                // If in detail panel area, scroll history
+                if let Some(ref layout) = self.last_layout {
+                    if let Some(detail) = layout.detail_panel {
+                        if x >= detail.x
+                            && x < detail.x + detail.width
+                            && y >= detail.y
+                            && y < detail.y + detail.height
+                        {
+                            self.detail_scroll_offset += 3;
+                            return;
+                        }
+                    }
+                }
+                // Otherwise scroll grid
                 if self.scroll_offset > 0 {
                     self.scroll_offset -= 1;
                 }
             }
             MouseEventKind::ScrollDown => {
+                if let Some(ref layout) = self.last_layout {
+                    if let Some(detail) = layout.detail_panel {
+                        if x >= detail.x
+                            && x < detail.x + detail.width
+                            && y >= detail.y
+                            && y < detail.y + detail.height
+                        {
+                            self.detail_scroll_offset =
+                                self.detail_scroll_offset.saturating_sub(3);
+                            return;
+                        }
+                    }
+                }
                 self.scroll_offset += 1;
             }
             _ => {}
@@ -406,7 +455,12 @@ impl App {
         for (i, rect) in layout.tile_rects.iter().enumerate() {
             if x >= rect.x && x < rect.x + rect.width && y >= rect.y && y < rect.y + rect.height {
                 if let Some(&tile_id) = self.last_filtered_ids.get(i) {
+                    let prev_selected = self.tile_manager.selected_id();
                     self.tile_manager.select(tile_id);
+                    // Reset detail scroll when switching to a different tile
+                    if prev_selected != Some(tile_id) {
+                        self.detail_scroll_offset = 0;
+                    }
                     if is_double_click {
                         self.mode = AppMode::Insert; // double-click → Insert
                     } else {

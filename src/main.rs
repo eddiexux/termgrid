@@ -1,4 +1,5 @@
-use clap::Parser;
+use clap::{CommandFactory, Parser};
+use clap_complete::{generate, Shell};
 use std::path::PathBuf;
 
 use termgrid::app::App;
@@ -18,6 +19,10 @@ struct Cli {
     /// Start fresh (ignore saved session)
     #[arg(long)]
     fresh: bool,
+
+    /// Generate shell completions for the given shell
+    #[arg(long, value_name = "SHELL")]
+    completions: Option<Shell>,
 }
 
 fn init_logging() -> PathBuf {
@@ -50,6 +55,13 @@ async fn main() -> anyhow::Result<()> {
     eprintln!("termgrid: logging to {}", log_path.display());
 
     let cli = Cli::parse();
+
+    if let Some(shell) = cli.completions {
+        let mut cmd = Cli::command();
+        generate(shell, &mut cmd, "termgrid", &mut std::io::stdout());
+        return Ok(());
+    }
+
     let config = Config::load(&Config::config_path());
     let mut app = App::new(config);
 

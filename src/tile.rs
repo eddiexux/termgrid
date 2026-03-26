@@ -25,6 +25,8 @@ pub struct Tile {
     pub status: TileStatus,
     pub last_active: Instant,
     pub waiting_since: Option<Instant>,
+    /// True when new PTY output arrived while this tile was not selected.
+    pub has_unread: bool,
 }
 
 impl Tile {
@@ -50,6 +52,7 @@ impl Tile {
             status: TileStatus::Running,
             last_active: Instant::now(),
             waiting_since: None,
+            has_unread: false,
         };
 
         Ok((tile, reader))
