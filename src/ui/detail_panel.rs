@@ -91,7 +91,8 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile) -> Option<(u16, u16)> 
     let header_para = Paragraph::new(Text::from(header_lines));
     frame.render_widget(header_para, header_area);
 
-    // Render full terminal area and compute cursor position
+    // Render full terminal area and compute cursor position.
+    // Show the region that includes the cursor so it's always visible.
     let mut cursor_pos = None;
     if terminal_area.height > 0 {
         let rows = terminal_area.height as usize;
@@ -99,9 +100,20 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile) -> Option<(u16, u16)> 
         let screen = &tile.vte.screen;
         let visible = screen.visible_lines();
         let total_visible = visible.len();
-        let start_row = total_visible.saturating_sub(rows);
+        let cursor_row = screen.cursor.row.min(total_visible.saturating_sub(1));
 
-        let text_lines: Vec<Line> = visible[start_row..]
+        // Ensure cursor is within the visible window
+        let start_row = if total_visible <= rows {
+            0 // Everything fits
+        } else if cursor_row < rows {
+            0 // Cursor near top — show from top
+        } else {
+            // Cursor below the first screenful — scroll to keep cursor visible
+            (cursor_row + 1).saturating_sub(rows)
+        };
+        let end_row = (start_row + rows).min(total_visible);
+
+        let text_lines: Vec<Line> = visible[start_row..end_row]
             .iter()
             .map(|row| {
                 let spans: Vec<Span> = row
