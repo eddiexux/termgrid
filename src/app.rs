@@ -53,6 +53,8 @@ pub struct App {
     last_layout: Option<layout::LayoutResult>,
     /// Tile IDs in the order they appear in the grid (for mouse click mapping).
     last_filtered_ids: Vec<crate::tile::TileId>,
+    /// For double-click detection: (time, column, row).
+    last_click: Option<(std::time::Instant, u16, u16)>,
 }
 
 impl App {
@@ -71,6 +73,7 @@ impl App {
             should_quit: false,
             last_layout: None,
             last_filtered_ids: Vec::new(),
+            last_click: None,
         }
     }
 
@@ -174,10 +177,16 @@ impl App {
             self.last_layout = Some(captured_layout);
             self.last_filtered_ids = filtered_ids;
 
-            // Wait for next event
+            // Wait for at least one event, then drain all pending events before re-rendering.
+            // This reduces render lag when multiple events arrive quickly (e.g. PTY output bursts).
             match self.event_rx.recv().await {
                 Some(event) => self.handle_event(event),
                 None => break,
+            }
+            // Drain remaining queued events
+            while let Ok(event) = self.event_rx.try_recv() {
+                self.handle_event(event);
+                if self.should_quit { break; }
             }
 
             if self.should_quit {
@@ -280,9 +289,19 @@ impl App {
 
         match mouse.kind {
             MouseEventKind::Down(crossterm::event::MouseButton::Left) => {
+                let now = std::time::Instant::now();
+
+                // Detect double-click: same position within 400ms
+                let is_double_click = self.last_click
+                    .map(|(t, lx, ly)| {
+                        now.duration_since(t).as_millis() < 400 && lx == x && ly == y
+                    })
+                    .unwrap_or(false);
+
+                self.last_click = Some((now, x, y));
+
                 // Click on tab bar?
                 if y >= layout.tab_bar.y && y < layout.tab_bar.y + layout.tab_bar.height {
-                    // Simple: cycle to next tab on any tab bar click
                     let tab_entries = self.compute_tab_entries();
                     self.active_tab = tab::next_tab(&self.active_tab, &tab_entries);
                     return;
@@ -295,24 +314,29 @@ impl App {
                     {
                         if let Some(&tile_id) = self.last_filtered_ids.get(i) {
                             self.tile_manager.select(tile_id);
-                            self.mode = AppMode::Normal;
+                            if is_double_click {
+                                self.mode = AppMode::Insert; // double-click → Insert
+                            } else {
+                                self.mode = AppMode::Normal;
+                            }
                         }
                         return;
                     }
                 }
 
-                // Click on detail panel → stay in current state
-                // Click elsewhere → deselect
-                if layout.detail_panel.is_none()
-                    || !layout.detail_panel.is_some_and(|d| {
-                        x >= d.x && x < d.x + d.width && y >= d.y && y < d.y + d.height
-                    })
-                {
-                    self.tile_manager.deselect();
+                // Click on detail panel while in Normal → enter Insert
+                if let Some(d) = layout.detail_panel {
+                    if x >= d.x && x < d.x + d.width && y >= d.y && y < d.y + d.height {
+                        if is_double_click && self.tile_manager.selected_id().is_some() {
+                            self.mode = AppMode::Insert;
+                        }
+                        return;
+                    }
                 }
+
+                // Click elsewhere → deselect
+                self.tile_manager.deselect();
             }
-            // Note: crossterm doesn't support double-click detection.
-            // Use 'i' or Enter to enter Insert mode after clicking to select.
             MouseEventKind::ScrollUp => {
                 if self.scroll_offset > 0 {
                     self.scroll_offset -= 1;

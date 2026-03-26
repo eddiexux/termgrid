@@ -7,7 +7,8 @@ use ratatui::{
     Frame,
 };
 
-pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool) {
+/// Render a tile card. Returns cursor screen position if the tile has a visible cursor.
+pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool) -> Option<(u16, u16)> {
     let border_color = if is_selected {
         Color::Cyan
     } else {
@@ -22,7 +23,7 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool) {
     frame.render_widget(block, area);
 
     if inner.height == 0 || inner.width == 0 {
-        return;
+        return None;
     }
 
     // Split inner area: first line for title, rest for preview
@@ -40,12 +41,16 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool) {
     frame.render_widget(title_para, title_area);
 
     // Render screen buffer preview
+    let mut cursor_pos = None;
     if preview_area.height > 0 {
         let preview_height = preview_area.height as usize;
-        let lines = tile.vte.screen.last_n_lines(preview_height);
         let preview_width = preview_area.width as usize;
+        let screen = &tile.vte.screen;
+        let visible = screen.visible_lines();
+        let total_visible = visible.len();
+        let start_row = total_visible.saturating_sub(preview_height);
 
-        let text_lines: Vec<Line> = lines
+        let text_lines: Vec<Line> = visible[start_row..]
             .iter()
             .map(|row| {
                 let spans: Vec<Span> = row
@@ -65,7 +70,20 @@ pub fn render(frame: &mut Frame, area: Rect, tile: &Tile, is_selected: bool) {
 
         let preview_para = Paragraph::new(Text::from(text_lines));
         frame.render_widget(preview_para, preview_area);
+
+        // Compute cursor position in the preview area
+        let cursor = &screen.cursor;
+        if cursor.visible && cursor.row >= start_row && cursor.col < preview_width {
+            let screen_row = (cursor.row - start_row) as u16;
+            if screen_row < preview_area.height {
+                cursor_pos = Some((
+                    preview_area.x + cursor.col as u16,
+                    preview_area.y + screen_row,
+                ));
+            }
+        }
     }
+    cursor_pos
 }
 
 fn build_title_line(tile: &Tile) -> Line<'static> {

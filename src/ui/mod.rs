@@ -29,16 +29,28 @@ pub fn render(
 
     let filtered = tile_manager.filtered_tiles(active_tab);
     let selected_id = tile_manager.selected_id();
+
+    // Render tile cards, collect cursor from selected tile's card
+    let mut tile_card_cursor = None;
     for (i, rect) in layout.tile_rects.iter().enumerate() {
         if let Some(tile) = filtered.get(i) {
             let is_selected = selected_id == Some(tile.id);
-            tile_card::render(frame, *rect, tile, is_selected);
+            let card_cursor = tile_card::render(frame, *rect, tile, is_selected);
+            if is_selected {
+                tile_card_cursor = card_cursor;
+            }
         }
     }
 
+    // Render detail panel if selected, get cursor from it
     let mut cursor_pos = None;
     if let (Some(detail_area), Some(tile)) = (layout.detail_panel, tile_manager.selected()) {
         cursor_pos = detail_panel::render(frame, detail_area, tile);
+    }
+
+    // If no detail panel, use tile card cursor
+    if cursor_pos.is_none() {
+        cursor_pos = tile_card_cursor;
     }
 
     status_bar::render(
