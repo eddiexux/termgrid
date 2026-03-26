@@ -6,3 +6,5 @@ pub mod pty;
 pub mod process;
 pub mod screen;
 pub mod tab;
+pub mod tile;
+pub mod tile_manager;
