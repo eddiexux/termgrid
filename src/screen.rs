@@ -273,23 +273,27 @@ impl ScreenBuffer {
 
     /// Resize the buffer to new dimensions, preserving content where possible.
     pub fn resize(&mut self, new_cols: usize, new_rows: usize) {
-        // Adjust columns for each existing row
-        for row in &mut self.grid {
-            if row.len() < new_cols {
+        // Resize a grid in place
+        fn resize_grid(grid: &mut Vec<Vec<Cell>>, new_cols: usize, new_rows: usize) {
+            for row in grid.iter_mut() {
                 row.resize(new_cols, Cell::default());
+            }
+            if grid.len() < new_rows {
+                let to_add = new_rows - grid.len();
+                for _ in 0..to_add {
+                    grid.push(vec![Cell::default(); new_cols]);
+                }
             } else {
-                row.truncate(new_cols);
+                grid.truncate(new_rows);
             }
         }
 
-        // Adjust number of rows
-        if self.grid.len() < new_rows {
-            let to_add = new_rows - self.grid.len();
-            for _ in 0..to_add {
-                self.grid.push(vec![Cell::default(); new_cols]);
-            }
-        } else {
-            self.grid.truncate(new_rows);
+        // Resize the active grid
+        resize_grid(&mut self.grid, new_cols, new_rows);
+
+        // Also resize the saved alt screen grid if it exists
+        if let Some(ref mut alt) = self.alt_grid {
+            resize_grid(alt, new_cols, new_rows);
         }
 
         self.cols = new_cols;
@@ -303,13 +307,15 @@ impl ScreenBuffer {
         self.cursor.row = self.cursor.row.min(new_rows.saturating_sub(1));
         self.cursor.col = self.cursor.col.min(new_cols.saturating_sub(1));
 
+        // Clamp saved alt cursor too
+        if let Some(ref mut alt_cursor) = self.alt_cursor {
+            alt_cursor.row = alt_cursor.row.min(new_rows.saturating_sub(1));
+            alt_cursor.col = alt_cursor.col.min(new_cols.saturating_sub(1));
+        }
+
         // Adjust scrollback rows
         for row in &mut self.scrollback {
-            if row.len() < new_cols {
-                row.resize(new_cols, Cell::default());
-            } else {
-                row.truncate(new_cols);
-            }
+            row.resize(new_cols, Cell::default());
         }
     }
 

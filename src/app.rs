@@ -256,12 +256,10 @@ impl App {
             AppEvent::Crossterm(CEvent::Mouse(mouse)) => {
                 self.handle_mouse(mouse);
             }
-            AppEvent::Crossterm(CEvent::Resize(cols, rows)) => {
-                // Resize selected tile's PTY to match new detail panel size
-                let (pty_cols, pty_rows) = Self::estimate_pty_size(cols, rows, self.config.layout.detail_panel_width);
-                if let Some(tile) = self.tile_manager.selected_mut() {
-                    let _ = tile.resize(pty_cols, pty_rows);
-                }
+            AppEvent::Crossterm(CEvent::Resize(_cols, _rows)) => {
+                // PTY resize is handled by sync_pty_sizes after the next render,
+                // using the actual terminal area dimensions from the renderer.
+                // No need to estimate here.
             }
             AppEvent::Crossterm(_) => {}
             AppEvent::PtyOutput(tile_id, data) => {
