@@ -303,6 +303,8 @@ impl App {
                 let bytes = input::key_event_to_bytes(&key);
                 if !bytes.is_empty() {
                     if let Some(tile) = self.tile_manager.selected_mut() {
+                        tile.has_unread = false;
+                        tile.burst_bytes = 0;
                         let _ = tile.write_input(&bytes);
                     }
                 }
@@ -317,14 +319,9 @@ impl App {
             }
             AppEvent::Crossterm(_) => {}
             AppEvent::PtyOutput(tile_id, data) => {
-                let selected_id = self.tile_manager.selected_id();
                 if let Some(tile) = self.tile_manager.get_mut(tile_id) {
                     tile.process_output(&data);
-                    // Only accumulate burst_bytes for non-selected tiles.
-                    // Selected tile output is being viewed by the user — not "unread".
-                    if selected_id != Some(tile_id) {
-                        tile.burst_bytes += data.len();
-                    }
+                    tile.burst_bytes += data.len();
                 } else {
                     tracing::debug!("PtyOutput for unknown tile {:?}", tile_id);
                 }
@@ -961,11 +958,7 @@ impl App {
 
         // Detect "burst + silence" pattern for Claude Code unread notification.
         // Only Claude Code tiles get the yellow border + system notification.
-        let selected_id = self.tile_manager.selected_id();
         for tile in self.tile_manager.tiles_mut() {
-            if Some(tile.id) == selected_id {
-                continue;
-            }
             if !tile.is_claude_code() {
                 continue;
             }

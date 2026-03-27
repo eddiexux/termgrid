@@ -16,9 +16,7 @@ pub fn render(
     is_selected: bool,
     index_label: Option<&str>,
 ) -> Option<(u16, u16)> {
-    let border_color = if is_selected {
-        Color::Cyan
-    } else if tile.has_unread {
+    let border_color = if tile.has_unread {
         Color::Yellow
     } else if tile.is_claude_code() {
         Color::Magenta
@@ -26,8 +24,15 @@ pub fn render(
         Color::DarkGray
     };
 
+    let border_type = if is_selected {
+        ratatui::widgets::BorderType::Double
+    } else {
+        ratatui::widgets::BorderType::Plain
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
+        .border_type(border_type)
         .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);

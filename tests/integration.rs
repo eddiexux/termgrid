@@ -164,11 +164,8 @@ mod burst_detection {
     }
 
     /// Simulate the detection logic from poll_tile_states.
-    fn run_detection(mgr: &mut TileManager, selected_id: Option<TileId>) {
+    fn run_detection(mgr: &mut TileManager, _selected_id: Option<TileId>) {
         for tile in mgr.tiles_mut() {
-            if Some(tile.id) == selected_id {
-                continue;
-            }
             if tile.has_unread {
                 continue;
             }
@@ -233,22 +230,19 @@ mod burst_detection {
     }
 
     #[test]
-    fn test_selected_tile_skipped() {
+    fn test_selected_tile_also_triggers_unread() {
         let mut mgr = TileManager::new();
         let id = make_tile(&mut mgr);
 
-        let tile = mgr.get_mut(id).unwrap();
-        tile.burst_bytes = 2000;
-        tile.last_active = Instant::now() - Duration::from_secs(10);
-
-        mgr.select(id); // tile is selected → should be skipped
-        // But select resets burst_bytes! So let's set it again after select.
+        mgr.select(id);
+        // select resets burst_bytes, so set after select
         mgr.get_mut(id).unwrap().burst_bytes = 2000;
         mgr.get_mut(id).unwrap().last_active = Instant::now() - Duration::from_secs(10);
 
         run_detection(&mut mgr, Some(id));
 
-        assert!(!mgr.get(id).unwrap().has_unread);
+        // Selected tile should still get unread flag
+        assert!(mgr.get(id).unwrap().has_unread);
     }
 
     #[test]
