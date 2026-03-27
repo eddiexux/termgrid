@@ -188,8 +188,9 @@ mod burst_detection {
 
         // Simulate non-selected tile receiving a burst
         let tile = mgr.get_mut(id).unwrap();
-        tile.process_output(&vec![b'X'; 5000]);
-        tile.burst_bytes = 5000; // app.rs would do this for non-selected
+        let burst = UNREAD_BURST_THRESHOLD + 1000;
+        tile.process_output(&vec![b'X'; burst]);
+        tile.burst_bytes = burst; // app.rs would do this for non-selected
         // Simulate 6 seconds of silence
         tile.last_active = Instant::now() - Duration::from_secs(6);
 
@@ -222,14 +223,15 @@ mod burst_detection {
         let id = make_tile(&mut mgr);
 
         let tile = mgr.get_mut(id).unwrap();
-        tile.burst_bytes = 5000;
+        let burst = UNREAD_BURST_THRESHOLD + 1000;
+        tile.burst_bytes = burst;
         tile.last_active = Instant::now(); // just now — still outputting
 
         mgr.deselect();
         run_detection(&mut mgr, None);
 
         assert!(!mgr.get(id).unwrap().has_unread);
-        assert_eq!(mgr.get(id).unwrap().burst_bytes, 5000); // not reset
+        assert_eq!(mgr.get(id).unwrap().burst_bytes, burst); // not reset
     }
 
     #[test]
@@ -239,7 +241,7 @@ mod burst_detection {
 
         mgr.select(id);
         // select resets burst_bytes, so set after select
-        mgr.get_mut(id).unwrap().burst_bytes = 5000;
+        mgr.get_mut(id).unwrap().burst_bytes = UNREAD_BURST_THRESHOLD + 1000;
         mgr.get_mut(id).unwrap().last_active = Instant::now() - Duration::from_secs(10);
 
         run_detection(&mut mgr, Some(id));
@@ -255,7 +257,7 @@ mod burst_detection {
 
         let tile = mgr.get_mut(id).unwrap();
         tile.has_unread = true;
-        tile.burst_bytes = 5000; // new output arrived while already yellow
+        tile.burst_bytes = UNREAD_BURST_THRESHOLD + 1000; // new output arrived while already yellow
         tile.last_active = Instant::now() - Duration::from_secs(10);
 
         mgr.deselect();
@@ -263,7 +265,7 @@ mod burst_detection {
 
         // has_unread stays true, burst_bytes NOT reset (skipped by continue)
         assert!(mgr.get(id).unwrap().has_unread);
-        assert_eq!(mgr.get(id).unwrap().burst_bytes, 5000);
+        assert_eq!(mgr.get(id).unwrap().burst_bytes, UNREAD_BURST_THRESHOLD + 1000);
     }
 
     #[test]
@@ -273,7 +275,7 @@ mod burst_detection {
 
         // First cycle: trigger unread
         let tile = mgr.get_mut(id).unwrap();
-        tile.burst_bytes = 5000;
+        tile.burst_bytes = UNREAD_BURST_THRESHOLD + 1000;
         tile.last_active = Instant::now() - Duration::from_secs(6);
         mgr.deselect();
         run_detection(&mut mgr, None);
@@ -346,13 +348,13 @@ mod burst_detection {
         mgr.deselect();
 
         // Simulate many small outputs (like Claude Code streaming)
+        let count = (UNREAD_BURST_THRESHOLD / 6) + 100; // enough to exceed threshold
         let tile = mgr.get_mut(id).unwrap();
-        for _ in 0..1000 {
+        for _ in 0..count {
             tile.process_output(b"token ");
             tile.burst_bytes += 6;
         }
-        // Total: 6000 bytes (above UNREAD_BURST_THRESHOLD)
-        assert_eq!(tile.burst_bytes, 6000);
+        assert!(tile.burst_bytes >= UNREAD_BURST_THRESHOLD);
 
         // Still recent — no trigger
         run_detection(&mut mgr, None);

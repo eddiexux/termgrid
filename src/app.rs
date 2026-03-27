@@ -46,9 +46,9 @@ use ratatui::Terminal;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
-/// Minimum accumulated bytes to consider a tile's output as a meaningful burst.
-/// Must exceed Claude Code's periodic status updates (~1.2KB) to avoid false positives.
-pub const UNREAD_BURST_THRESHOLD: usize = 4000;
+/// Minimum visible (non-escape-sequence) bytes to consider a tile's output as a meaningful burst.
+/// Only printable characters count; terminal control sequences are excluded.
+pub const UNREAD_BURST_THRESHOLD: usize = 200;
 
 /// How long a tile must be silent after a burst before marking as unread.
 pub const UNREAD_SILENCE_DURATION: Duration = Duration::from_secs(5);
@@ -368,7 +368,7 @@ impl App {
             AppEvent::PtyOutput(tile_id, data) => {
                 if let Some(tile) = self.tile_manager.get_mut(tile_id) {
                     tile.process_output(&data);
-                    tile.burst_bytes += data.len();
+                    tile.burst_bytes += count_visible_bytes(&data);
                 } else {
                     tracing::debug!("PtyOutput for unknown tile {:?}", tile_id);
                 }
@@ -1186,6 +1186,81 @@ impl App {
     }
 }
 
+/// Count bytes that represent visible content, skipping ANSI escape sequences.
+/// Terminal control sequences (cursor moves, colors, title sets, etc.) don't produce
+/// visible output changes and should not contribute to burst detection.
+fn count_visible_bytes(data: &[u8]) -> usize {
+    let mut visible = 0;
+    let mut i = 0;
+    while i < data.len() {
+        if data[i] == 0x1b {
+            // ESC sequence — skip until terminator
+            i += 1;
+            if i < data.len() {
+                match data[i] {
+                    b'[' => {
+                        // CSI sequence: ESC [ ... <final byte 0x40-0x7E>
+                        i += 1;
+                        while i < data.len() && !(0x40..=0x7E).contains(&data[i]) {
+                            i += 1;
+                        }
+                        if i < data.len() {
+                            i += 1; // skip final byte
+                        }
+                    }
+                    b']' => {
+                        // OSC sequence: ESC ] ... (ST or BEL)
+                        i += 1;
+                        while i < data.len() {
+                            if data[i] == 0x07 {
+                                // BEL terminator
+                                i += 1;
+                                break;
+                            }
+                            if data[i] == 0x1b && i + 1 < data.len() && data[i + 1] == b'\\' {
+                                // ST terminator (ESC \)
+                                i += 2;
+                                break;
+                            }
+                            i += 1;
+                        }
+                    }
+                    b'P' | b'_' | b'^' => {
+                        // DCS (ESC P), APC (ESC _), PM (ESC ^): terminated by ST or BEL
+                        i += 1;
+                        while i < data.len() {
+                            if data[i] == 0x07 {
+                                i += 1;
+                                break;
+                            }
+                            if data[i] == 0x1b && i + 1 < data.len() && data[i + 1] == b'\\' {
+                                i += 2;
+                                break;
+                            }
+                            i += 1;
+                        }
+                    }
+                    b'(' | b')' | b'*' | b'+' => {
+                        // Character set designation: ESC ( C
+                        i += 2;
+                    }
+                    _ => {
+                        // Other two-byte ESC sequences (ESC =, ESC >, etc.)
+                        i += 1;
+                    }
+                }
+            }
+        } else if data[i] < 0x20 && data[i] != b'\n' && data[i] != b'\t' {
+            // Control characters (CR, BEL, etc.) — not visible content
+            i += 1;
+        } else {
+            visible += 1;
+            i += 1;
+        }
+    }
+    visible
+}
+
 /// Normalize selection to (start_row, start_col, end_row, end_col) in terminal-area-relative coords.
 fn normalize_selection(
     start: (u16, u16),
@@ -1406,6 +1481,76 @@ mod tests {
         assert_eq!(sx, 2);
         assert_eq!(ey, 2);
         assert_eq!(ex, 8);
+    }
+
+    // count_visible_bytes tests
+
+    #[test]
+    fn test_count_visible_bytes_plain_text() {
+        assert_eq!(count_visible_bytes(b"hello world"), 11);
+    }
+
+    #[test]
+    fn test_count_visible_bytes_newlines_and_tabs() {
+        assert_eq!(count_visible_bytes(b"line1\nline2\tok"), 14);
+    }
+
+    #[test]
+    fn test_count_visible_bytes_csi_sequences() {
+        // ESC[31m = set red, ESC[0m = reset
+        assert_eq!(count_visible_bytes(b"\x1b[31mhello\x1b[0m"), 5);
+        // ESC[H = cursor home, ESC[2J = clear screen
+        assert_eq!(count_visible_bytes(b"\x1b[H\x1b[2Jtext"), 4);
+    }
+
+    #[test]
+    fn test_count_visible_bytes_osc_sequences() {
+        // OSC with BEL terminator (title set)
+        assert_eq!(count_visible_bytes(b"\x1b]0;my-title\x07"), 0);
+        // OSC with ST terminator
+        assert_eq!(count_visible_bytes(b"\x1b]0;title\x1b\\visible"), 7);
+    }
+
+    #[test]
+    fn test_count_visible_bytes_heartbeat_pattern() {
+        // Typical Claude Code heartbeat: pure cursor/status control sequences
+        // hide cursor + device status + show cursor
+        assert_eq!(count_visible_bytes(b"\x1b[?25l\x1b[6n\x1b[?25h"), 0);
+        // save + move + clear line + restore
+        assert_eq!(count_visible_bytes(b"\x1b[s\x1b[999;1H\x1b[K\x1b[u"), 0);
+    }
+
+    #[test]
+    fn test_count_visible_bytes_dcs_sequence() {
+        // DCS with ST terminator (tmux passthrough)
+        assert_eq!(count_visible_bytes(b"\x1bPtmux;\x1b\x1b[31m\x1b\\visible"), 7);
+        // DCS with BEL terminator
+        assert_eq!(count_visible_bytes(b"\x1bPsome data\x07text"), 4);
+    }
+
+    #[test]
+    fn test_count_visible_bytes_apc_pm_sequences() {
+        // APC (ESC _) with ST terminator
+        assert_eq!(count_visible_bytes(b"\x1b_app command\x1b\\ok"), 2);
+        // PM (ESC ^) with BEL terminator
+        assert_eq!(count_visible_bytes(b"\x1b^private msg\x07done"), 4);
+    }
+
+    #[test]
+    fn test_count_visible_bytes_control_chars() {
+        // CR, BEL, BS are not visible
+        assert_eq!(count_visible_bytes(b"\r\x07\x08"), 0);
+    }
+
+    #[test]
+    fn test_count_visible_bytes_charset_designation() {
+        // ESC ( B = designate ASCII charset
+        assert_eq!(count_visible_bytes(b"\x1b(Bhello"), 5);
+    }
+
+    #[test]
+    fn test_count_visible_bytes_empty() {
+        assert_eq!(count_visible_bytes(b""), 0);
     }
 }
 
