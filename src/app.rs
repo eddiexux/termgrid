@@ -63,8 +63,23 @@ pub enum OverlayKind {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum PtyBackendKind {
+    Native,
+    Tmux,
+}
+
+pub fn detect_backend() -> PtyBackendKind {
+    if crate::tmux::is_tmux_available() {
+        PtyBackendKind::Tmux
+    } else {
+        PtyBackendKind::Native
+    }
+}
+
 pub struct App {
     config: Config,
+    backend: PtyBackendKind,
     tile_manager: TileManager,
     mode: AppMode,
     active_tab: TabFilter,
@@ -103,8 +118,11 @@ impl App {
         let config_last_modified = std::fs::metadata(&config_path)
             .and_then(|m| m.modified())
             .ok();
+        let backend = detect_backend();
+        tracing::info!("PTY 后端: {:?}", backend);
         App {
             config,
+            backend,
             tile_manager: TileManager::new(),
             mode: AppMode::Normal,
             active_tab: TabFilter::All,
@@ -128,18 +146,29 @@ impl App {
 
     pub fn spawn_tile(&mut self, cwd: &Path) -> anyhow::Result<TileId> {
         let id = self.tile_manager.next_tile_id();
-        tracing::info!("Spawning tile {} in {:?}", id.0, cwd);
+        tracing::info!("Spawning tile {} in {:?} (backend={:?})", id.0, cwd, self.backend);
         // Use actual terminal dimensions for PTY size
         let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
         let (pty_cols, pty_rows) =
             Self::estimate_pty_size(term_cols, term_rows, self.config.layout.detail_panel_width);
-        let (tile, reader) =
-            crate::tile::Tile::spawn(id, &self.config.terminal.shell, cwd, pty_cols, pty_rows)?;
-        self.tile_manager.add(tile);
 
-        // Spawn async reader task
-        let tx = self.event_tx.clone();
-        tokio::spawn(pty_reader_task(id, reader, tx));
+        match self.backend {
+            PtyBackendKind::Tmux => {
+                let (tile, reader, _name) =
+                    crate::tile::Tile::spawn_tmux(id, cwd, pty_cols, pty_rows)?;
+                self.tile_manager.add(tile);
+                let tx = self.event_tx.clone();
+                tokio::spawn(tmux_reader_task(id, reader, tx));
+            }
+            PtyBackendKind::Native => {
+                let (tile, reader) = crate::tile::Tile::spawn(
+                    id, &self.config.terminal.shell, cwd, pty_cols, pty_rows,
+                )?;
+                self.tile_manager.add(tile);
+                let tx = self.event_tx.clone();
+                tokio::spawn(pty_reader_task(id, reader, tx));
+            }
+        }
 
         Ok(id)
     }
@@ -551,8 +580,8 @@ impl App {
             return;
         }
 
-        // Status bar buttons (right side): " [?] [×] [Ncol] "
-        // From right: [Ncol]=7, [×]=5, [?]=5
+        // Status bar buttons (right side): " [?] [Ncol] "
+        // From right: [Ncol]=7, [?]=5
         if y >= layout.status_bar.y
             && y < layout.status_bar.y + layout.status_bar.height
         {
@@ -567,26 +596,9 @@ impl App {
                 };
                 return;
             }
-            // [×] close selected tile
-            let close_btn_start = col_btn_start.saturating_sub(5);
-            if x >= close_btn_start && x < col_btn_start {
-                if let Some(id) = self.tile_manager.selected_id() {
-                    let needs_confirm = self
-                        .tile_manager
-                        .get(id)
-                        .map(|t| t.status == crate::tile::TileStatus::Running)
-                        .unwrap_or(false);
-                    if needs_confirm {
-                        self.mode = AppMode::Overlay(OverlayKind::ConfirmClose(id));
-                    } else {
-                        self.tile_manager.remove(id);
-                    }
-                }
-                return;
-            }
             // [?] help
-            let help_btn_start = close_btn_start.saturating_sub(5);
-            if x >= help_btn_start && x < close_btn_start {
+            let help_btn_start = col_btn_start.saturating_sub(5);
+            if x >= help_btn_start && x < col_btn_start {
                 self.mode = AppMode::Overlay(OverlayKind::Help);
                 return;
             }
@@ -598,6 +610,27 @@ impl App {
                 // Map visible tile index to absolute filtered index
                 let absolute_idx = layout.first_visible_tile + i;
                 if let Some(&tile_id) = self.last_filtered_ids.get(absolute_idx) {
+                    // Check close button on tile cards
+                    // Close button is at top-right of inner area: x = rect.x + rect.width - 2 (border), y = rect.y + 1 (border)
+                    let close_x = rect.x + rect.width - 2;
+                    let close_y = rect.y + 1;
+                    if x == close_x && y == close_y {
+                        let needs_confirm = self
+                            .tile_manager
+                            .get(tile_id)
+                            .map(|t| t.status == crate::tile::TileStatus::Running)
+                            .unwrap_or(false);
+                        if needs_confirm {
+                            self.mode = AppMode::Overlay(OverlayKind::ConfirmClose(tile_id));
+                        } else {
+                            if let Some(sname) = self.tile_manager.get(tile_id).and_then(|t| t.session_name.clone()) {
+                                crate::tmux::kill_session(&sname);
+                            }
+                            self.tile_manager.remove(tile_id);
+                        }
+                        return;
+                    }
+
                     let prev_selected = self.tile_manager.selected_id();
                     self.tile_manager.select(tile_id);
                     // Reset detail scroll when switching to a different tile
@@ -1021,6 +1054,21 @@ impl App {
         self.event_rx.try_recv()
     }
 
+    /// Reconnect to an existing tmux session.
+    pub fn reconnect_tile(&mut self, session_name: &str, cwd: &Path) -> anyhow::Result<TileId> {
+        let id = self.tile_manager.next_tile_id();
+        let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
+        let (pty_cols, pty_rows) =
+            Self::estimate_pty_size(term_cols, term_rows, self.config.layout.detail_panel_width);
+        let (tile, reader) =
+            crate::tile::Tile::reconnect_tmux(id, session_name, cwd, pty_cols, pty_rows)?;
+        self.tile_manager.add(tile);
+        let tx = self.event_tx.clone();
+        tokio::spawn(tmux_reader_task(id, reader, tx));
+        tracing::info!("Reconnected tile {} to tmux session {}", id.0, session_name);
+        Ok(id)
+    }
+
     /// Restore scrollback content into a tile's VTE (for session restore).
     pub fn restore_tile_scrollback(&mut self, tile_id: TileId, data: &[u8]) {
         if let Some(tile) = self.tile_manager.get_mut(tile_id) {
@@ -1038,6 +1086,10 @@ impl App {
 
     pub fn columns(&self) -> u8 {
         self.columns
+    }
+
+    pub fn backend(&self) -> PtyBackendKind {
+        self.backend
     }
 
     pub fn set_columns(&mut self, columns: u8) {
@@ -1262,6 +1314,42 @@ async fn pty_reader_task(
             }
             _ => {
                 tracing::debug!("PTY reader error for tile {}", tile_id.0);
+                break;
+            }
+        }
+    }
+}
+
+async fn tmux_reader_task(
+    tile_id: TileId,
+    reader: crate::tmux::TmuxReader,
+    tx: mpsc::Sender<AppEvent>,
+) {
+    use tokio::io::AsyncReadExt;
+    let file = match tokio::fs::File::open(&reader.pipe_path).await {
+        Ok(f) => f,
+        Err(e) => {
+            tracing::error!("FIFO 打开失败 {}: {}", reader.pipe_path.display(), e);
+            let _ = tx.send(AppEvent::PtyExited(tile_id)).await;
+            return;
+        }
+    };
+    let mut buf_reader = tokio::io::BufReader::new(file);
+    let mut buf = vec![0u8; 4096];
+    loop {
+        match buf_reader.read(&mut buf).await {
+            Ok(0) => {
+                let _ = tx.send(AppEvent::PtyExited(tile_id)).await;
+                break;
+            }
+            Ok(n) => {
+                let _ = tx
+                    .send(AppEvent::PtyOutput(tile_id, buf[..n].to_vec()))
+                    .await;
+            }
+            Err(e) => {
+                tracing::error!("FIFO 读取错误 {:?}: {}", tile_id, e);
+                let _ = tx.send(AppEvent::PtyExited(tile_id)).await;
                 break;
             }
         }

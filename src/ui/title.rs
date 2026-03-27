@@ -94,6 +94,14 @@ pub fn build_title_line(tile: &Tile, index_label: Option<&str>) -> Line<'static>
         Style::default().fg(status_color),
     ));
 
+    // tmux session name (e.g. "tg0")
+    if let Some(ref sname) = tile.session_name {
+        spans.push(Span::styled(
+            format!("{} ", sname),
+            Style::default().fg(Color::DarkGray),
+        ));
+    }
+
     // Claude Code indicator
     if tile.is_claude_code() {
         spans.push(Span::styled(

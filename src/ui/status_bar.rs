@@ -14,12 +14,10 @@ pub fn render(frame: &mut Frame, area: Rect, session_count: usize, columns: u8) 
     let para = Paragraph::new(line);
     frame.render_widget(para, area);
 
-    // Render buttons at right side: " [?] [×] [Ncol] "
-    let close_label = " [\u{00d7}] "; // × symbol
+    // Render buttons at right side: " [?] [Ncol] "
     let col_label = format!(" [{}col] ", columns);
     let buttons: Vec<(&str, Color)> = vec![
         (" [?] ", Color::Yellow),
-        (close_label, Color::Red),
     ];
 
     let total_btn_width: u16 =

@@ -56,6 +56,21 @@ pub fn render(
     let title_para = Paragraph::new(title_line);
     frame.render_widget(title_para, title_area);
 
+    // Render close button at right end of title area
+    if title_area.width >= 3 {
+        let close_area = Rect {
+            x: title_area.x + title_area.width - 1,
+            y: title_area.y,
+            width: 1,
+            height: 1,
+        };
+        let close_btn = Paragraph::new(Span::styled(
+            "\u{00d7}", // × symbol
+            Style::default().fg(Color::Red),
+        ));
+        frame.render_widget(close_btn, close_area);
+    }
+
     // Render screen buffer preview — show lines around the cursor, not the buffer bottom.
     // The PTY is sized to the detail panel (e.g. 30 rows), but the small tile only has ~8 rows.
     // If we take "last 8 lines" we'd get blank rows because the shell prompt is near the top.

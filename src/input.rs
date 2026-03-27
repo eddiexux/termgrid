@@ -21,6 +21,9 @@ pub fn handle_overlay_key(
         }
         OverlayKind::ConfirmClose(id) => {
             if key.code == KeyCode::Char('y') {
+                if let Some(sname) = tile_manager.get(id).and_then(|t| t.session_name.clone()) {
+                    crate::tmux::kill_session(&sname);
+                }
                 tile_manager.remove(id);
             }
             *mode = AppMode::Normal;
