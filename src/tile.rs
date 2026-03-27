@@ -1,5 +1,5 @@
 use crate::git::{detect_git, GitContext};
-use crate::pty::{PtyHandle, PtyReader};
+use crate::pty::{PtyBackend, PtyHandle, PtyReader};
 use crate::screen::{Cell, VteState};
 use std::collections::VecDeque;
 use std::path::{Path, PathBuf};
@@ -20,7 +20,7 @@ pub enum TileStatus {
 pub struct Tile {
     pub id: TileId,
     pub vte: VteState,
-    pub pty: PtyHandle,
+    pub pty: Box<dyn PtyBackend>,
     pub git_context: Option<GitContext>,
     pub cwd: PathBuf,
     pub status: TileStatus,
@@ -66,7 +66,7 @@ impl Tile {
         let tile = Tile {
             id,
             vte,
-            pty,
+            pty: Box::new(pty),
             git_context,
             cwd: cwd.to_path_buf(),
             status: TileStatus::Running,
@@ -221,7 +221,7 @@ impl Tile {
 
     /// Write data to the PTY.
     pub fn write_input(&mut self, data: &[u8]) -> anyhow::Result<()> {
-        self.pty.write(data)
+        self.pty.write_input(data)
     }
 
     /// Resize the PTY and the screen buffer.

@@ -4,6 +4,21 @@ use std::path::Path;
 use anyhow::Result;
 use portable_pty::{CommandBuilder, PtySize};
 
+/// Abstraction over PTY backends (native portable-pty or tmux).
+pub trait PtyBackend: Send {
+    fn write_input(&mut self, data: &[u8]) -> anyhow::Result<()>;
+    fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()>;
+    fn is_alive(&mut self) -> bool;
+    fn pid(&self) -> Option<u32>;
+    fn signal_interrupt(&self);
+
+    /// Return the master PTY file descriptor (Unix only).
+    /// Default returns None for backends that don't expose an fd.
+    fn master_fd(&self) -> Option<i32> {
+        None
+    }
+}
+
 pub struct PtyReader(pub Box<dyn std::io::Read + Send>);
 
 pub struct PtyHandle {
@@ -89,7 +104,31 @@ impl PtyHandle {
 
     #[cfg(not(unix))]
     pub fn signal_interrupt(&self) {}
+}
 
+impl PtyBackend for PtyHandle {
+    fn write_input(&mut self, data: &[u8]) -> anyhow::Result<()> {
+        self.write(data)
+    }
+    fn resize(&self, cols: u16, rows: u16) -> anyhow::Result<()> {
+        PtyHandle::resize(self, cols, rows)
+    }
+    fn is_alive(&mut self) -> bool {
+        PtyHandle::is_alive(self)
+    }
+    fn pid(&self) -> Option<u32> {
+        PtyHandle::pid(self)
+    }
+    fn signal_interrupt(&self) {
+        PtyHandle::signal_interrupt(self)
+    }
+    #[cfg(unix)]
+    fn master_fd(&self) -> Option<i32> {
+        PtyHandle::master_fd(self)
+    }
+}
+
+impl PtyHandle {
     #[cfg(unix)]
     pub fn master_fd(&self) -> Option<i32> {
         self.master.as_raw_fd()
