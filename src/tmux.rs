@@ -151,8 +151,10 @@ pub enum InputEvent {
     RawBytes(Vec<u8>),
 }
 
-/// 将原始字节流解析为 InputEvent 序列
-pub fn parse_input_chunk(data: &[u8]) -> Vec<InputEvent> {
+/// 将原始字节流解析为 InputEvent 序列。
+/// 返回 `(events, leftover)`，其中 leftover 是尾部不完整的 ESC 序列或 UTF-8 字节，
+/// 应保留到下一次 flush 时与后续数据拼接。
+pub fn parse_input_chunk(data: &[u8]) -> (Vec<InputEvent>, Vec<u8>) {
     let mut events = Vec::new();
     let mut literal_buf = String::new();
     let mut i = 0;
@@ -164,12 +166,32 @@ pub fn parse_input_chunk(data: &[u8]) -> Vec<InputEvent> {
             // 先 flush 累积的文本
             flush_literal(&mut literal_buf, &mut events);
 
+            // 检查是否是尾部不完整的 ESC 序列
+            let remaining = &data[i..];
+            if remaining.len() == 1 {
+                // 孤立的 ESC 在末尾，可能是序列开头，保留到下一次
+                flush_literal(&mut literal_buf, &mut events);
+                return (events, remaining.to_vec());
+            }
+            // ESC [ 但后面没有终止字节
+            if remaining.len() >= 2 && remaining[1] == b'[' {
+                if is_incomplete_csi(remaining) {
+                    flush_literal(&mut literal_buf, &mut events);
+                    return (events, remaining.to_vec());
+                }
+            }
+            // ESC O 但后面没有第三个字节
+            if remaining.len() == 2 && remaining[1] == b'O' {
+                flush_literal(&mut literal_buf, &mut events);
+                return (events, remaining.to_vec());
+            }
+
             // 尝试解析 escape 序列
-            if let Some((key, consumed)) = parse_escape_sequence(&data[i..]) {
+            if let Some((key, consumed)) = parse_escape_sequence(remaining) {
                 events.push(InputEvent::TmuxKey(key));
                 i += consumed;
             } else {
-                // 单独的 ESC
+                // 无法识别的 ESC 序列，作为单独 Escape 处理
                 events.push(InputEvent::TmuxKey("Escape".to_string()));
                 i += 1;
             }
@@ -190,33 +212,66 @@ pub fn parse_input_chunk(data: &[u8]) -> Vec<InputEvent> {
             } else {
                 // UTF-8 多字节
                 let remaining = &data[i..];
-                match std::str::from_utf8(remaining) {
+                let expected_len = utf8_char_len(b);
+                if expected_len > remaining.len() {
+                    // 尾部不完整的 UTF-8 字符，保留到下一次
+                    flush_literal(&mut literal_buf, &mut events);
+                    return (events, remaining.to_vec());
+                }
+                match std::str::from_utf8(&remaining[..expected_len]) {
                     Ok(s) => {
-                        // 只取第一个字符
                         let ch = s.chars().next().unwrap();
                         literal_buf.push(ch);
                         i += ch.len_utf8();
                     }
-                    Err(e) => {
-                        // 部分有效
-                        let valid_len = e.valid_up_to();
-                        if valid_len > 0 {
-                            let s = std::str::from_utf8(&remaining[..valid_len]).unwrap();
-                            let ch = s.chars().next().unwrap();
-                            literal_buf.push(ch);
-                            i += ch.len_utf8();
-                        } else {
-                            flush_literal(&mut literal_buf, &mut events);
-                            events.push(InputEvent::RawBytes(vec![b]));
-                            i += 1;
-                        }
+                    Err(_) => {
+                        // 无效 UTF-8
+                        flush_literal(&mut literal_buf, &mut events);
+                        events.push(InputEvent::RawBytes(vec![b]));
+                        i += 1;
                     }
                 }
             }
         }
     }
     flush_literal(&mut literal_buf, &mut events);
-    events
+    (events, Vec::new())
+}
+
+/// 判断一个 CSI 序列是否不完整（缺少终止字节）
+fn is_incomplete_csi(data: &[u8]) -> bool {
+    // data[0] = ESC, data[1] = '['
+    if data.len() < 3 {
+        return true;
+    }
+    // 扫描参数和中间字节，看是否有终止字节
+    for &b in &data[2..] {
+        if b >= 0x40 && b <= 0x7e {
+            // 找到终止字节，序列完整
+            return false;
+        }
+        if !(b.is_ascii_digit() || b == b';' || (0x20..=0x2f).contains(&b)) {
+            // 非法字节，不是不完整，而是无法识别
+            return false;
+        }
+    }
+    // 扫完了还没找到终止字节
+    true
+}
+
+/// 根据 UTF-8 首字节推断字符的期望长度
+fn utf8_char_len(first_byte: u8) -> usize {
+    if first_byte & 0x80 == 0 {
+        1
+    } else if first_byte & 0xE0 == 0xC0 {
+        2
+    } else if first_byte & 0xF0 == 0xE0 {
+        3
+    } else if first_byte & 0xF8 == 0xF0 {
+        4
+    } else {
+        1 // 无效首字节，按 1 处理
+    }
 }
 
 fn flush_literal(buf: &mut String, events: &mut Vec<InputEvent>) {
@@ -444,7 +499,7 @@ impl TmuxPtyBackend {
             .status();
 
         // 挂载 pipe-pane
-        let pipe_cmd = format!("cat > {}", pipe.display());
+        let pipe_cmd = format!("cat > '{}'", pipe.display());
         let status = Command::new("tmux")
             .args(["pipe-pane", "-t", session_name, "-O", &pipe_cmd])
             .status()
@@ -486,7 +541,7 @@ impl TmuxPtyBackend {
         }
 
         // 重新挂 pipe-pane
-        let pipe_cmd = format!("cat > {}", pipe.display());
+        let pipe_cmd = format!("cat > '{}'", pipe.display());
         let status = Command::new("tmux")
             .args(["pipe-pane", "-t", session_name, "-O", &pipe_cmd])
             .status()
@@ -513,18 +568,38 @@ impl TmuxPtyBackend {
         let name_clone = session_name.clone();
         tokio::spawn(async move {
             tokio::pin!(let cancel = cancel_rx;);
+            let mut carry_over: Vec<u8> = Vec::new();
             loop {
                 tokio::select! {
-                    _ = &mut cancel => break,
+                    _ = &mut cancel => {
+                        // 最终 flush：消费所有剩余数据
+                        let data = {
+                            let mut buf = buf_clone.lock().unwrap();
+                            let mut data = std::mem::take(&mut carry_over);
+                            data.append(&mut *buf);
+                            data
+                        };
+                        if !data.is_empty() {
+                            let (events, _) = parse_input_chunk(&data);
+                            flush_input_to_tmux(&name_clone, &events);
+                        }
+                        break;
+                    }
                     _ = tokio::time::sleep(std::time::Duration::from_millis(10)) => {
                         let data = {
                             let mut buf = buf_clone.lock().unwrap();
-                            if buf.is_empty() {
+                            if buf.is_empty() && carry_over.is_empty() {
                                 continue;
                             }
-                            std::mem::take(&mut *buf)
+                            let mut data = std::mem::take(&mut carry_over);
+                            data.append(&mut *buf);
+                            data
                         };
-                        flush_input_to_tmux(&name_clone, &data);
+                        let (events, leftover) = parse_input_chunk(&data);
+                        carry_over = leftover;
+                        if !events.is_empty() {
+                            flush_input_to_tmux(&name_clone, &events);
+                        }
                     }
                 }
             }
@@ -539,19 +614,18 @@ impl TmuxPtyBackend {
 }
 
 /// 将解析后的输入事件发送到 tmux session
-fn flush_input_to_tmux(session_name: &str, data: &[u8]) {
-    let events = parse_input_chunk(data);
+fn flush_input_to_tmux(session_name: &str, events: &[InputEvent]) {
     for event in events {
-        match event {
+        let result = match event {
             InputEvent::Literal(text) => {
-                let _ = Command::new("tmux")
-                    .args(["send-keys", "-t", session_name, "-l", &text])
-                    .output();
+                Command::new("tmux")
+                    .args(["send-keys", "-t", session_name, "-l", text])
+                    .output()
             }
             InputEvent::TmuxKey(key) => {
-                let _ = Command::new("tmux")
-                    .args(["send-keys", "-t", session_name, &key])
-                    .output();
+                Command::new("tmux")
+                    .args(["send-keys", "-t", session_name, key])
+                    .output()
             }
             InputEvent::RawBytes(bytes) => {
                 let hex_args: Vec<String> = bytes.iter().map(|b| format!("{:02x}", b)).collect();
@@ -560,8 +634,21 @@ fn flush_input_to_tmux(session_name: &str, data: &[u8]) {
                 for h in &hex_args {
                     cmd.arg(h);
                 }
-                let _ = cmd.output();
+                cmd.output()
             }
+        };
+        match result {
+            Ok(output) if !output.status.success() => {
+                tracing::warn!(
+                    "tmux send-keys 失败 (session={}): {}",
+                    session_name,
+                    String::from_utf8_lossy(&output.stderr).trim()
+                );
+            }
+            Err(e) => {
+                tracing::warn!("执行 tmux send-keys 失败 (session={}): {}", session_name, e);
+            }
+            _ => {}
         }
     }
 }
@@ -659,146 +746,150 @@ mod tests {
 
     #[test]
     fn test_parse_printable_text() {
-        let events = parse_input_chunk(b"hello world");
+        let (events, leftover) = parse_input_chunk(b"hello world");
         assert_eq!(events, vec![InputEvent::Literal("hello world".to_string())]);
+        assert!(leftover.is_empty());
     }
 
     #[test]
     fn test_parse_ctrl_c() {
-        let events = parse_input_chunk(b"\x03");
+        let (events, _) = parse_input_chunk(b"\x03");
         assert_eq!(events, vec![InputEvent::TmuxKey("C-c".to_string())]);
     }
 
     #[test]
     fn test_parse_ctrl_d() {
-        let events = parse_input_chunk(b"\x04");
+        let (events, _) = parse_input_chunk(b"\x04");
         assert_eq!(events, vec![InputEvent::TmuxKey("C-d".to_string())]);
     }
 
     #[test]
     fn test_parse_ctrl_a() {
-        let events = parse_input_chunk(b"\x01");
+        let (events, _) = parse_input_chunk(b"\x01");
         assert_eq!(events, vec![InputEvent::TmuxKey("C-a".to_string())]);
     }
 
     #[test]
     fn test_parse_ctrl_z() {
-        let events = parse_input_chunk(b"\x1a");
+        let (events, _) = parse_input_chunk(b"\x1a");
         assert_eq!(events, vec![InputEvent::TmuxKey("C-z".to_string())]);
     }
 
     #[test]
     fn test_parse_tab() {
-        let events = parse_input_chunk(b"\x09");
+        let (events, _) = parse_input_chunk(b"\x09");
         assert_eq!(events, vec![InputEvent::TmuxKey("Tab".to_string())]);
     }
 
     #[test]
     fn test_parse_enter_cr() {
-        let events = parse_input_chunk(b"\x0d");
+        let (events, _) = parse_input_chunk(b"\x0d");
         assert_eq!(events, vec![InputEvent::TmuxKey("Enter".to_string())]);
     }
 
     #[test]
     fn test_parse_enter_lf() {
-        let events = parse_input_chunk(b"\x0a");
+        let (events, _) = parse_input_chunk(b"\x0a");
         assert_eq!(events, vec![InputEvent::TmuxKey("Enter".to_string())]);
     }
 
     #[test]
     fn test_parse_backspace() {
-        let events = parse_input_chunk(b"\x7f");
+        let (events, _) = parse_input_chunk(b"\x7f");
         assert_eq!(events, vec![InputEvent::TmuxKey("BSpace".to_string())]);
     }
 
     #[test]
     fn test_parse_escape_alone() {
-        let events = parse_input_chunk(b"\x1b");
-        assert_eq!(events, vec![InputEvent::TmuxKey("Escape".to_string())]);
+        // 孤立 ESC 在末尾应作为 leftover 保留
+        let (events, leftover) = parse_input_chunk(b"\x1b");
+        assert!(events.is_empty());
+        assert_eq!(leftover, vec![0x1b]);
     }
 
     #[test]
     fn test_parse_arrow_up() {
-        let events = parse_input_chunk(b"\x1b[A");
+        let (events, leftover) = parse_input_chunk(b"\x1b[A");
         assert_eq!(events, vec![InputEvent::TmuxKey("Up".to_string())]);
+        assert!(leftover.is_empty());
     }
 
     #[test]
     fn test_parse_arrow_down() {
-        let events = parse_input_chunk(b"\x1b[B");
+        let (events, _) = parse_input_chunk(b"\x1b[B");
         assert_eq!(events, vec![InputEvent::TmuxKey("Down".to_string())]);
     }
 
     #[test]
     fn test_parse_arrow_right() {
-        let events = parse_input_chunk(b"\x1b[C");
+        let (events, _) = parse_input_chunk(b"\x1b[C");
         assert_eq!(events, vec![InputEvent::TmuxKey("Right".to_string())]);
     }
 
     #[test]
     fn test_parse_arrow_left() {
-        let events = parse_input_chunk(b"\x1b[D");
+        let (events, _) = parse_input_chunk(b"\x1b[D");
         assert_eq!(events, vec![InputEvent::TmuxKey("Left".to_string())]);
     }
 
     #[test]
     fn test_parse_home_end() {
-        let events = parse_input_chunk(b"\x1b[H");
+        let (events, _) = parse_input_chunk(b"\x1b[H");
         assert_eq!(events, vec![InputEvent::TmuxKey("Home".to_string())]);
 
-        let events = parse_input_chunk(b"\x1b[F");
+        let (events, _) = parse_input_chunk(b"\x1b[F");
         assert_eq!(events, vec![InputEvent::TmuxKey("End".to_string())]);
     }
 
     #[test]
     fn test_parse_insert_delete() {
-        let events = parse_input_chunk(b"\x1b[2~");
+        let (events, _) = parse_input_chunk(b"\x1b[2~");
         assert_eq!(events, vec![InputEvent::TmuxKey("IC".to_string())]);
 
-        let events = parse_input_chunk(b"\x1b[3~");
+        let (events, _) = parse_input_chunk(b"\x1b[3~");
         assert_eq!(events, vec![InputEvent::TmuxKey("DC".to_string())]);
     }
 
     #[test]
     fn test_parse_page_up_down() {
-        let events = parse_input_chunk(b"\x1b[5~");
+        let (events, _) = parse_input_chunk(b"\x1b[5~");
         assert_eq!(events, vec![InputEvent::TmuxKey("PPage".to_string())]);
 
-        let events = parse_input_chunk(b"\x1b[6~");
+        let (events, _) = parse_input_chunk(b"\x1b[6~");
         assert_eq!(events, vec![InputEvent::TmuxKey("NPage".to_string())]);
     }
 
     #[test]
     fn test_parse_ctrl_arrow() {
         // Ctrl+Up: ESC [ 1 ; 5 A
-        let events = parse_input_chunk(b"\x1b[1;5A");
+        let (events, _) = parse_input_chunk(b"\x1b[1;5A");
         assert_eq!(events, vec![InputEvent::TmuxKey("C-Up".to_string())]);
 
         // Ctrl+Down: ESC [ 1 ; 5 B
-        let events = parse_input_chunk(b"\x1b[1;5B");
+        let (events, _) = parse_input_chunk(b"\x1b[1;5B");
         assert_eq!(events, vec![InputEvent::TmuxKey("C-Down".to_string())]);
 
         // Ctrl+Right
-        let events = parse_input_chunk(b"\x1b[1;5C");
+        let (events, _) = parse_input_chunk(b"\x1b[1;5C");
         assert_eq!(events, vec![InputEvent::TmuxKey("C-Right".to_string())]);
 
         // Ctrl+Left
-        let events = parse_input_chunk(b"\x1b[1;5D");
+        let (events, _) = parse_input_chunk(b"\x1b[1;5D");
         assert_eq!(events, vec![InputEvent::TmuxKey("C-Left".to_string())]);
     }
 
     #[test]
     fn test_parse_f1_to_f4() {
-        let events = parse_input_chunk(b"\x1bOP");
+        let (events, _) = parse_input_chunk(b"\x1bOP");
         assert_eq!(events, vec![InputEvent::TmuxKey("F1".to_string())]);
 
-        let events = parse_input_chunk(b"\x1bOQ");
+        let (events, _) = parse_input_chunk(b"\x1bOQ");
         assert_eq!(events, vec![InputEvent::TmuxKey("F2".to_string())]);
 
-        let events = parse_input_chunk(b"\x1bOR");
+        let (events, _) = parse_input_chunk(b"\x1bOR");
         assert_eq!(events, vec![InputEvent::TmuxKey("F3".to_string())]);
 
-        let events = parse_input_chunk(b"\x1bOS");
+        let (events, _) = parse_input_chunk(b"\x1bOS");
         assert_eq!(events, vec![InputEvent::TmuxKey("F4".to_string())]);
     }
 
@@ -815,7 +906,7 @@ mod tests {
             (b"\x1b[24~".as_slice(), "F12"),
         ];
         for (input, expected) in &cases {
-            let events = parse_input_chunk(input);
+            let (events, _) = parse_input_chunk(input);
             assert_eq!(
                 events,
                 vec![InputEvent::TmuxKey(expected.to_string())],
@@ -829,7 +920,7 @@ mod tests {
     fn test_parse_mixed_input() {
         // "hello" + Enter + Ctrl-C
         let input = b"hello\x0d\x03";
-        let events = parse_input_chunk(input);
+        let (events, _) = parse_input_chunk(input);
         assert_eq!(
             events,
             vec![
@@ -848,7 +939,7 @@ mod tests {
         input.extend_from_slice(b"\x1b[D"); // Left
         input.extend_from_slice(b"\x1b[D"); // Left
         input.extend_from_slice(b"cd ");
-        let events = parse_input_chunk(&input);
+        let (events, _) = parse_input_chunk(&input);
         assert_eq!(
             events,
             vec![
@@ -863,27 +954,95 @@ mod tests {
     #[test]
     fn test_parse_shift_arrow() {
         // Shift+Right: ESC [ 1 ; 2 C
-        let events = parse_input_chunk(b"\x1b[1;2C");
+        let (events, _) = parse_input_chunk(b"\x1b[1;2C");
         assert_eq!(events, vec![InputEvent::TmuxKey("S-Right".to_string())]);
     }
 
     #[test]
     fn test_parse_alt_arrow() {
         // Alt+Up: ESC [ 1 ; 3 A
-        let events = parse_input_chunk(b"\x1b[1;3A");
+        let (events, _) = parse_input_chunk(b"\x1b[1;3A");
         assert_eq!(events, vec![InputEvent::TmuxKey("M-Up".to_string())]);
     }
 
     #[test]
     fn test_parse_empty_input() {
-        let events = parse_input_chunk(b"");
+        let (events, leftover) = parse_input_chunk(b"");
         assert!(events.is_empty());
+        assert!(leftover.is_empty());
     }
 
     #[test]
     fn test_parse_utf8() {
-        let events = parse_input_chunk("你好".as_bytes());
+        let (events, leftover) = parse_input_chunk("你好".as_bytes());
         assert_eq!(events, vec![InputEvent::Literal("你好".to_string())]);
+        assert!(leftover.is_empty());
+    }
+
+    // -----------------------------------------------------------------------
+    // carry-over / leftover 测试
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_leftover_incomplete_esc_bracket() {
+        // ESC [ 在末尾，缺少终止字节
+        let (events, leftover) = parse_input_chunk(b"hello\x1b[");
+        assert_eq!(events, vec![InputEvent::Literal("hello".to_string())]);
+        assert_eq!(leftover, b"\x1b[");
+    }
+
+    #[test]
+    fn test_leftover_incomplete_csi_params() {
+        // ESC [ 1 ; 5 在末尾，缺少终止字节
+        let (events, leftover) = parse_input_chunk(b"x\x1b[1;5");
+        assert_eq!(events, vec![InputEvent::Literal("x".to_string())]);
+        assert_eq!(leftover, b"\x1b[1;5");
+    }
+
+    #[test]
+    fn test_leftover_incomplete_ss3() {
+        // ESC O 在末尾，缺少第三字节
+        let (events, leftover) = parse_input_chunk(b"\x1bO");
+        assert!(events.is_empty());
+        assert_eq!(leftover, b"\x1bO");
+    }
+
+    #[test]
+    fn test_leftover_incomplete_utf8() {
+        // "你" 的 UTF-8 是 e4 bd a0，只给前 2 个字节
+        let (events, leftover) = parse_input_chunk(&[0xe4, 0xbd]);
+        assert!(events.is_empty());
+        assert_eq!(leftover, vec![0xe4, 0xbd]);
+    }
+
+    #[test]
+    fn test_leftover_then_complete() {
+        // 模拟 carry-over 场景：第一次 flush 留下 ESC，第二次拼上 [A
+        let (events1, leftover1) = parse_input_chunk(b"\x1b");
+        assert!(events1.is_empty());
+        assert_eq!(leftover1, vec![0x1b]);
+
+        // 拼接后再解析
+        let mut combined = leftover1;
+        combined.extend_from_slice(b"[A");
+        let (events2, leftover2) = parse_input_chunk(&combined);
+        assert_eq!(events2, vec![InputEvent::TmuxKey("Up".to_string())]);
+        assert!(leftover2.is_empty());
+    }
+
+    #[test]
+    fn test_leftover_utf8_then_complete() {
+        // "你" = e4 bd a0，先给 e4 bd
+        let (events1, leftover1) = parse_input_chunk(&[0xe4, 0xbd]);
+        assert!(events1.is_empty());
+        assert_eq!(leftover1, vec![0xe4, 0xbd]);
+
+        // 拼上最后一个字节
+        let mut combined = leftover1;
+        combined.push(0xa0);
+        let (events2, leftover2) = parse_input_chunk(&combined);
+        assert_eq!(events2, vec![InputEvent::Literal("你".to_string())]);
+        assert!(leftover2.is_empty());
     }
 
     // -----------------------------------------------------------------------
