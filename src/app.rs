@@ -647,9 +647,13 @@ impl App {
             }
         }
 
-        // Click on detail panel — no special action needed (keyboard already goes to selected PTY)
+        // Click on detail panel — clear unread for the selected tile (user is looking at it)
         if let Some(d) = layout.detail_panel {
             if x >= d.x && x < d.x + d.width && y >= d.y && y < d.y + d.height {
+                if let Some(tile) = self.tile_manager.selected_mut() {
+                    tile.has_unread = false;
+                    tile.burst_bytes = 0;
+                }
                 return;
             }
         }
@@ -1025,6 +1029,12 @@ impl App {
             if tile.burst_bytes >= 500
                 && tile.last_active.elapsed() >= Duration::from_secs(5)
             {
+                tracing::info!(
+                    "Tile {} unread triggered: burst_bytes={}, last_active_ago={:?}",
+                    tile.id.0,
+                    tile.burst_bytes,
+                    tile.last_active.elapsed(),
+                );
                 tile.has_unread = true;
                 tile.burst_bytes = 0;
 

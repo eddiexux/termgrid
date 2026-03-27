@@ -88,6 +88,13 @@ impl TileManager {
         self.selected = Some(id);
         // Clear unread flag and reset burst counter when tile becomes selected
         if let Some(tile) = self.tiles.iter_mut().find(|t| t.id == id) {
+            if tile.has_unread {
+                tracing::info!(
+                    "Tile {} unread cleared by select, burst_bytes was {}",
+                    tile.id.0,
+                    tile.burst_bytes,
+                );
+            }
             tile.has_unread = false;
             tile.burst_bytes = 0;
         }

@@ -57,11 +57,20 @@ pub fn render(
     scroll_back: usize,
     scrollback_rows: Option<&[Vec<crate::screen::Cell>]>,
 ) -> DetailRenderResult {
+    // Match border color to tile card: yellow for unread, magenta for Claude Code, gray otherwise
+    let border_color = if tile.has_unread {
+        Color::Yellow
+    } else if tile.is_claude_code() {
+        Color::Magenta
+    } else {
+        Color::DarkGray
+    };
+
     // Render the outer block with left border as vertical separator
     let block = Block::default()
         .borders(Borders::LEFT)
         .border_set(symbols::border::PLAIN)
-        .border_style(Style::default().fg(Color::DarkGray));
+        .border_style(Style::default().fg(border_color));
 
     let inner = block.inner(area);
     frame.render_widget(block, area);
