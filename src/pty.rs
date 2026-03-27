@@ -140,6 +140,27 @@ impl PtyHandle {
     }
 }
 
+/// Minimal no-op PTY backend for testing (does not spawn a real process).
+#[cfg(test)]
+pub struct NullPtyBackend;
+
+#[cfg(test)]
+impl PtyBackend for NullPtyBackend {
+    fn write_input(&mut self, _data: &[u8]) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn resize(&self, _cols: u16, _rows: u16) -> anyhow::Result<()> {
+        Ok(())
+    }
+    fn is_alive(&mut self) -> bool {
+        true
+    }
+    fn pid(&self) -> Option<u32> {
+        None
+    }
+    fn signal_interrupt(&self) {}
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

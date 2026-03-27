@@ -8,9 +8,43 @@ pub mod title;
 use crate::app::{AppMode, TextSelection};
 use crate::layout::LayoutResult;
 use crate::tab::{TabEntry, TabFilter};
+use crate::tile::Tile;
 use crate::tile_manager::TileManager;
 use ratatui::Frame;
 use std::collections::HashMap;
+
+/// Compute index labels for tiles sharing the same project name.
+/// Returns `None` for unique projects, `Some("[1]")`, `Some("[2]")` etc for duplicates.
+pub fn compute_index_labels(tiles: &[&Tile]) -> Vec<Option<String>> {
+    let mut project_counts: HashMap<String, usize> = HashMap::new();
+    for tile in tiles {
+        let key = tile
+            .git_context
+            .as_ref()
+            .map(|g| g.project_name.clone())
+            .unwrap_or_else(|| tile.cwd.display().to_string());
+        *project_counts.entry(key).or_default() += 1;
+    }
+    let mut project_indices: HashMap<String, usize> = HashMap::new();
+    tiles
+        .iter()
+        .map(|tile| {
+            let key = tile
+                .git_context
+                .as_ref()
+                .map(|g| g.project_name.clone())
+                .unwrap_or_else(|| tile.cwd.display().to_string());
+            let count = project_counts.get(&key).copied().unwrap_or(1);
+            if count > 1 {
+                let idx = project_indices.entry(key).or_insert(0);
+                *idx += 1;
+                Some(format!("[{}]", *idx))
+            } else {
+                None
+            }
+        })
+        .collect()
+}
 
 /// Render result with actual terminal area size for PTY synchronization.
 pub struct RenderResult {
@@ -43,36 +77,7 @@ pub fn render(
     let filtered = tile_manager.filtered_tiles(active_tab);
     let selected_id = tile_manager.selected_id();
 
-    // Compute index labels for tiles sharing the same project name.
-    // Only add labels when there are duplicates (e.g. "[1]", "[2]").
-    let mut project_counts: HashMap<String, usize> = HashMap::new();
-    for tile in &filtered {
-        let key = tile
-            .git_context
-            .as_ref()
-            .map(|g| g.project_name.clone())
-            .unwrap_or_else(|| tile.cwd.display().to_string());
-        *project_counts.entry(key).or_default() += 1;
-    }
-    let mut project_indices: HashMap<String, usize> = HashMap::new();
-    let index_labels: Vec<Option<String>> = filtered
-        .iter()
-        .map(|tile| {
-            let key = tile
-                .git_context
-                .as_ref()
-                .map(|g| g.project_name.clone())
-                .unwrap_or_else(|| tile.cwd.display().to_string());
-            let count = project_counts.get(&key).copied().unwrap_or(1);
-            if count > 1 {
-                let idx = project_indices.entry(key).or_insert(0);
-                *idx += 1;
-                Some(format!("[{}]", *idx))
-            } else {
-                None
-            }
-        })
-        .collect();
+    let index_labels = compute_index_labels(&filtered);
 
     // Render tile cards, collect cursor from selected tile's card
     let mut tile_card_cursor = None;
@@ -149,5 +154,90 @@ pub fn render(
 
     RenderResult {
         detail_terminal_size,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::git::GitContext;
+    use crate::tile::{Tile, TileId};
+    use std::path::PathBuf;
+
+    fn make_tile(id: u64, project_name: Option<&str>, cwd: &str) -> Tile {
+        let git_context = project_name.map(|name| GitContext {
+            project_name: name.to_string(),
+            branch: Some("main".to_string()),
+            is_worktree: false,
+            worktree_name: None,
+            repo_root: PathBuf::from(cwd),
+        });
+        Tile::new_test(TileId(id), &PathBuf::from(cwd), git_context)
+    }
+
+    #[test]
+    fn test_index_labels_unique_projects() {
+        let t1 = make_tile(1, Some("alpha"), "/alpha");
+        let t2 = make_tile(2, Some("beta"), "/beta");
+        let tiles: Vec<&Tile> = vec![&t1, &t2];
+        let labels = compute_index_labels(&tiles);
+        assert_eq!(labels, vec![None, None]);
+    }
+
+    #[test]
+    fn test_index_labels_duplicate_projects() {
+        let t1 = make_tile(1, Some("alpha"), "/a1");
+        let t2 = make_tile(2, Some("alpha"), "/a2");
+        let t3 = make_tile(3, Some("beta"), "/b");
+        let tiles: Vec<&Tile> = vec![&t1, &t2, &t3];
+        let labels = compute_index_labels(&tiles);
+        assert_eq!(
+            labels,
+            vec![Some("[1]".to_string()), Some("[2]".to_string()), None]
+        );
+    }
+
+    #[test]
+    fn test_index_labels_all_same_project() {
+        let t1 = make_tile(1, Some("proj"), "/p1");
+        let t2 = make_tile(2, Some("proj"), "/p2");
+        let t3 = make_tile(3, Some("proj"), "/p3");
+        let tiles: Vec<&Tile> = vec![&t1, &t2, &t3];
+        let labels = compute_index_labels(&tiles);
+        assert_eq!(
+            labels,
+            vec![
+                Some("[1]".to_string()),
+                Some("[2]".to_string()),
+                Some("[3]".to_string()),
+            ]
+        );
+    }
+
+    #[test]
+    fn test_index_labels_no_git_context_uses_cwd() {
+        let t1 = make_tile(1, None, "/same/path");
+        let t2 = make_tile(2, None, "/same/path");
+        let tiles: Vec<&Tile> = vec![&t1, &t2];
+        let labels = compute_index_labels(&tiles);
+        assert_eq!(
+            labels,
+            vec![Some("[1]".to_string()), Some("[2]".to_string())]
+        );
+    }
+
+    #[test]
+    fn test_index_labels_empty() {
+        let tiles: Vec<&Tile> = vec![];
+        let labels = compute_index_labels(&tiles);
+        assert!(labels.is_empty());
+    }
+
+    #[test]
+    fn test_index_labels_single_tile() {
+        let t1 = make_tile(1, Some("proj"), "/p");
+        let tiles: Vec<&Tile> = vec![&t1];
+        let labels = compute_index_labels(&tiles);
+        assert_eq!(labels, vec![None]);
     }
 }

@@ -20,7 +20,9 @@
 - **详情面板** —— 选中窗格后右侧展示完整终端输出，支持颜色
 - **纯鼠标交互** —— 所有操作通过工具栏按钮完成，无需记忆快捷键，无模式切换
 - **滚动锁定** —— 详情面板往回翻时位置锁定，新输出不会把你拽回底部
-- **会话持久化** —— 退出时自动保存布局和终端历史，重启后恢复
+- **tmux 后端** —— 自动检测 tmux 并使用，终端会话在 termgrid 重启后自动重连
+- **Claude Code 感知** —— 识别 Claude Code 窗格，任务完成时显示未读提醒
+- **会话持久化** —— 退出时自动保存布局，tmux 会话自动重连恢复
 - **鼠标支持** —— 点击选中窗格，拖动选中文本（松手自动复制到剪贴板）
 - **完整终端模拟** —— 基于 [vt100](https://crates.io/crates/vt100)，支持复杂 TUI 应用
 - **中文支持** —— 正确处理全角字符宽度
@@ -127,14 +129,17 @@ cwd_poll_interval = 2        # CWD 检测轮询间隔（秒）
 
 ```
 termgrid
-├── App          —— 事件循环 + 鼠标驱动的状态管理
-├── EventLoop    —— tokio 驱动，多路复用 PTY 输出 + 用户输入 + 定时器
-├── TileManager  —— 窗格生命周期、选中、网格导航
-│   └── Tile     —— PTY 进程 + vt100 终端模拟器 + Git 上下文
-├── GitDetector  —— CWD 变化 → git2 仓库检测（带防抖）
-├── TabBar       —— 从窗格的 Git 上下文动态聚合项目分组
-├── Layout       —— 多列网格 + 详情面板布局计算
-└── UI           —— ratatui 渲染组件（窗格卡片、详情面板、Tab 栏、弹窗）
+├── App            —— 事件循环 + 鼠标驱动的状态管理
+├── EventLoop      —— tokio 驱动，多路复用 PTY 输出 + 用户输入 + 定时器
+├── TileManager    —— 窗格生命周期、选中、网格导航
+│   └── Tile       —— PTY 后端 + vt100 终端模拟器 + Git 上下文
+├── PtyBackend     —— trait，两种实现：
+│   ├── PtyHandle  —— 原生 PTY（portable-pty）
+│   └── TmuxPtyBackend —— tmux session + pipe-pane I/O
+├── GitDetector    —— CWD 变化 → git2 仓库检测（带防抖）
+├── TabBar         —— 从窗格的 Git 上下文动态聚合项目分组
+├── Layout         —— 多列网格 + 详情面板布局计算
+└── UI             —— ratatui 渲染组件（窗格卡片、详情面板、Tab 栏、弹窗）
 ```
 
 ## 技术栈
@@ -143,7 +148,7 @@ termgrid
 |------|-------|
 | TUI 框架 | [ratatui](https://ratatui.rs/) + [crossterm](https://crates.io/crates/crossterm) |
 | 终端模拟 | [vt100](https://crates.io/crates/vt100) |
-| PTY 管理 | [portable-pty](https://crates.io/crates/portable-pty) |
+| PTY 管理 | [portable-pty](https://crates.io/crates/portable-pty) + [tmux](https://github.com/tmux/tmux) |
 | Git 检测 | [git2](https://crates.io/crates/git2) |
 | 异步运行时 | [tokio](https://tokio.rs/) |
 

@@ -71,36 +71,33 @@ pub fn render(
         frame.render_widget(close_btn, close_area);
     }
 
-    // Render screen buffer preview — show lines around the cursor, not the buffer bottom.
-    // The PTY is sized to the detail panel (e.g. 30 rows), but the small tile only has ~8 rows.
-    // If we take "last 8 lines" we'd get blank rows because the shell prompt is near the top.
-    // Instead, show lines ending at the cursor row so the active content is always visible.
+    // Render screen buffer preview using the same logic as the detail panel.
+    // The VTE is sized to the detail panel dimensions; the tile card just shows
+    // the bottom portion of that same view (a cropped preview).
     let mut cursor_pos = None;
     if preview_area.height > 0 {
         let preview_height = preview_area.height as usize;
         let preview_width = preview_area.width;
         let screen = &tile.vte;
         let (cursor_row, cursor_col) = screen.cursor_position();
-        let total_rows = screen.rows() as usize;
 
-        let end_row = (cursor_row as usize + 1).min(total_rows);
-        let start_row = end_row.saturating_sub(preview_height);
+        // Use the same visible_rows_with_cursor as the detail panel
+        let (start_row, row_cells) =
+            screen.visible_rows_with_cursor(preview_height, preview_width);
 
-        // Visual cursor in tile card: always show on selected tile.
-        // Don't depend on terminal cursor visibility state (shell may temporarily
-        // hide cursor during prompt rendering, causing flickering).
         let cursor_visible = is_selected;
 
-        let text_lines: Vec<Line> = (start_row..end_row)
+        let text_lines: Vec<Line> = row_cells
+            .iter()
             .enumerate()
-            .map(|(display_idx, grid_row)| {
-                let row_cells = screen.row_cells(grid_row as u16, preview_width);
-                let spans: Vec<Span> = row_cells
+            .map(|(display_row, row)| {
+                let grid_row = start_row + display_row;
+                let spans: Vec<Span> = row
                     .iter()
                     .enumerate()
                     .filter_map(|(col_idx, cell)| {
                         if cell.is_wide_continuation {
-                            return None; // skip, but col_idx still tracks the real column
+                            return None;
                         }
                         let is_cursor = cursor_visible
                             && grid_row == cursor_row as usize
@@ -119,7 +116,6 @@ pub fn render(
                         Some(Span::styled(cell.ch.to_string(), style))
                     })
                     .collect();
-                let _ = display_idx;
                 Line::from(spans)
             })
             .collect();

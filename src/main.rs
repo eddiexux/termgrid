@@ -81,12 +81,19 @@ async fn main() -> anyhow::Result<()> {
             if !sessions.is_empty() {
                 let saved = Session::load(&Session::session_path());
                 let columns = saved.as_ref().map(|s| s.columns).unwrap_or(2);
+                let (term_cols, term_rows) =
+                    crossterm::terminal::size().unwrap_or((80, 24));
+                let detail_pct = app.detail_panel_width_pct();
+                let (target_cols, target_rows) =
+                    termgrid::app::App::estimate_pty_size(term_cols, term_rows, detail_pct);
+
                 for (name, cwd) in &sessions {
                     if cwd.exists() {
-                        if let Ok(id) = app.reconnect_tile(name, cwd) {
-                            if let Some(captured) = termgrid::tmux::capture_pane(name) {
-                                app.restore_tile_scrollback(id, &captured);
-                            }
+                        // 恢复策略：不用 capture_pane（它只能拿到文本快照，丢失光标/状态栏/终端状态）。
+                        // 而是建立 pipe-pane 后 resize，让 tmux 通过 pipe-pane 输出真实的终端重绘流。
+                        // 全屏程序（Claude Code）会完整重绘；shell 重绘 prompt。
+                        if let Ok(_id) = app.reconnect_tile(name, cwd, target_cols, target_rows) {
+                            termgrid::tmux::resize_pane(name, target_cols, target_rows);
                         }
                     }
                 }
@@ -113,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
     }
 
     app.run().await?;
+    app.shutdown_tasks();
 
     if app.backend() == termgrid::app::PtyBackendKind::Tmux {
         // Tmux backend: save layout + session mapping only, don't kill sessions
@@ -209,6 +217,8 @@ async fn main() -> anyhow::Result<()> {
         session.save(&Session::session_path())?;
     }
 
-    Ok(())
+    // crossterm 的 EventStream 内部有阻塞 stdin 读取线程，
+    // tokio task abort 无法终止它。显式退出进程。
+    std::process::exit(0);
 }
 

@@ -300,6 +300,28 @@ impl Tile {
         }
     }
 
+    /// Create a tile with a mock PTY backend for testing.
+    #[cfg(test)]
+    pub fn new_test(id: TileId, cwd: &Path, git_context: Option<crate::git::GitContext>) -> Self {
+        Tile {
+            id,
+            vte: VteState::new(80, 24),
+            pty: Box::new(crate::pty::NullPtyBackend),
+            git_context,
+            cwd: cwd.to_path_buf(),
+            status: TileStatus::Running,
+            last_active: Instant::now(),
+            waiting_since: None,
+            has_unread: false,
+            burst_bytes: 0,
+            fg_process_name: None,
+            session_name: None,
+            output_history: VecDeque::new(),
+            max_history_bytes: 10 * 1024 * 1024,
+            scrollback_cache: None,
+        }
+    }
+
     /// Write data to the PTY.
     pub fn write_input(&mut self, data: &[u8]) -> anyhow::Result<()> {
         self.pty.write_input(data)

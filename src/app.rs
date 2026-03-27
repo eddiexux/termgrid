@@ -108,6 +108,8 @@ pub struct App {
     config_path: std::path::PathBuf,
     /// Last known modification time of the config file.
     config_last_modified: Option<std::time::SystemTime>,
+    /// Spawned background tasks (readers, tick timer) to abort on shutdown.
+    spawned_tasks: Vec<tokio::task::JoinHandle<()>>,
 }
 
 impl App {
@@ -131,6 +133,7 @@ impl App {
             event_tx,
             event_rx,
             should_quit: false,
+            spawned_tasks: Vec::new(),
             last_layout: None,
             last_filtered_ids: Vec::new(),
             selection: None,
@@ -158,7 +161,8 @@ impl App {
                     crate::tile::Tile::spawn_tmux(id, cwd, pty_cols, pty_rows)?;
                 self.tile_manager.add(tile);
                 let tx = self.event_tx.clone();
-                tokio::spawn(tmux_reader_task(id, reader, tx));
+                let handle = tokio::spawn(tmux_reader_task(id, reader, tx));
+                self.spawned_tasks.push(handle);
             }
             PtyBackendKind::Native => {
                 let (tile, reader) = crate::tile::Tile::spawn(
@@ -166,7 +170,8 @@ impl App {
                 )?;
                 self.tile_manager.add(tile);
                 let tx = self.event_tx.clone();
-                tokio::spawn(pty_reader_task(id, reader, tx));
+                let handle = tokio::spawn(pty_reader_task(id, reader, tx));
+                self.spawned_tasks.push(handle);
             }
         }
 
@@ -191,11 +196,11 @@ impl App {
 
         // Spawn crossterm event reader
         let tx = self.event_tx.clone();
-        tokio::spawn(crossterm_event_reader(tx.clone()));
+        self.spawned_tasks.push(tokio::spawn(crossterm_event_reader(tx.clone())));
 
         // Spawn tick timer
         let tx_tick = self.event_tx.clone();
-        tokio::spawn(async move {
+        self.spawned_tasks.push(tokio::spawn(async move {
             let mut interval = tokio::time::interval(Duration::from_millis(500));
             loop {
                 interval.tick().await;
@@ -203,7 +208,7 @@ impl App {
                     break;
                 }
             }
-        });
+        }));
 
         loop {
             // Collect values before the draw borrow
@@ -966,12 +971,31 @@ impl App {
                     let master_fd = tile.pty.master_fd();
                     let pty_pid = tile.pty.pid();
                     if let (Some(fd), Some(pid)) = (master_fd, pty_pid) {
+                        // Native PTY: use tcgetpgrp to get foreground PID
                         if let Some(fg_pid) = crate::process::get_foreground_pid(fd) {
                             let name = crate::process::get_process_name(fg_pid);
                             (fg_pid == pid as i32, name)
                         } else {
                             (true, None)
                         }
+                    } else if let Some(session_name) = &tile.session_name {
+                        // Tmux backend: use tmux queries for foreground process
+                        let fg_cmd = crate::tmux::pane_foreground_command(session_name);
+                        let is_shell = fg_cmd
+                            .as_ref()
+                            .map(|c| matches!(c.as_str(), "zsh" | "bash" | "fish" | "sh" | "dash"))
+                            .unwrap_or(true);
+
+                        // For Claude detection, resolve via proc_pidpath if fg is not shell
+                        let fg_name = if is_shell {
+                            fg_cmd
+                        } else {
+                            // Try to get the actual process name via proc_pidpath (resolves symlinks)
+                            crate::tmux::pane_foreground_pid(session_name)
+                                .and_then(|pid| crate::process::get_process_name(pid))
+                                .or(fg_cmd)
+                        };
+                        (is_shell, fg_name)
                     } else {
                         (true, None)
                     }
@@ -1055,37 +1079,52 @@ impl App {
     }
 
     /// Reconnect to an existing tmux session.
-    pub fn reconnect_tile(&mut self, session_name: &str, cwd: &Path) -> anyhow::Result<TileId> {
+    /// `vte_cols`/`vte_rows` should match the tmux pane's current dimensions
+    /// so that captured content maps correctly to VTE coordinates.
+    pub fn reconnect_tile(
+        &mut self,
+        session_name: &str,
+        cwd: &Path,
+        vte_cols: u16,
+        vte_rows: u16,
+    ) -> anyhow::Result<TileId> {
         let id = self.tile_manager.next_tile_id();
-        let (term_cols, term_rows) = crossterm::terminal::size().unwrap_or((80, 24));
-        let (pty_cols, pty_rows) =
-            Self::estimate_pty_size(term_cols, term_rows, self.config.layout.detail_panel_width);
         let (tile, reader) =
-            crate::tile::Tile::reconnect_tmux(id, session_name, cwd, pty_cols, pty_rows)?;
+            crate::tile::Tile::reconnect_tmux(id, session_name, cwd, vte_cols, vte_rows)?;
         self.tile_manager.add(tile);
         let tx = self.event_tx.clone();
-        tokio::spawn(tmux_reader_task(id, reader, tx));
+        let handle = tokio::spawn(tmux_reader_task(id, reader, tx));
+        self.spawned_tasks.push(handle);
         tracing::info!("Reconnected tile {} to tmux session {}", id.0, session_name);
         Ok(id)
     }
 
-    /// Restore scrollback content into a tile's VTE (for session restore).
+    /// Restore scrollback content into a tile's VTE (for native backend session restore).
     pub fn restore_tile_scrollback(&mut self, tile_id: TileId, data: &[u8]) {
         if let Some(tile) = self.tile_manager.get_mut(tile_id) {
             tile.vte.process(data);
-            // Ensure cursor is visible and at a sane position after restore.
-            // The restored content may have left cursor hidden or at an old position.
             tile.vte.process(b"\x1b[?25h"); // show cursor
             tracing::debug!(
                 "Restored {} bytes scrollback for tile {}",
                 data.len(),
-                tile_id.0
+                tile_id.0,
             );
+        }
+    }
+
+    /// Abort all spawned background tasks (readers, tick timer).
+    pub fn shutdown_tasks(&mut self) {
+        for handle in self.spawned_tasks.drain(..) {
+            handle.abort();
         }
     }
 
     pub fn columns(&self) -> u8 {
         self.columns
+    }
+
+    pub fn detail_panel_width_pct(&self) -> u16 {
+        self.config.layout.detail_panel_width
     }
 
     pub fn backend(&self) -> PtyBackendKind {
@@ -1097,7 +1136,7 @@ impl App {
     }
 
     /// Estimate PTY dimensions before first render (when detail panel rect is unknown).
-    fn estimate_pty_size(term_cols: u16, term_rows: u16, detail_width_pct: u16) -> (u16, u16) {
+    pub fn estimate_pty_size(term_cols: u16, term_rows: u16, detail_width_pct: u16) -> (u16, u16) {
         let detail_width = ((term_cols as u32 * detail_width_pct as u32) / 100) as u16;
         let cols = detail_width
             .saturating_sub(crate::layout::DETAIL_BORDER_WIDTH)
@@ -1281,6 +1320,69 @@ mod tests {
         let (start, end) = union_ranges((0, 2), (10, 2), (0, 5), (10, 5));
         assert_eq!(start, (0, 2));
         assert_eq!(end, (10, 5));
+    }
+
+    #[test]
+    fn test_estimate_pty_size_normal() {
+        let (cols, rows) = App::estimate_pty_size(200, 50, 60);
+        // detail_width = 200 * 60 / 100 = 120, minus border
+        assert!(cols > 100);
+        assert!(rows > 40);
+    }
+
+    #[test]
+    fn test_estimate_pty_size_small_terminal() {
+        let (cols, rows) = App::estimate_pty_size(20, 10, 60);
+        // Should clamp to minimums (10 cols, 5 rows)
+        assert!(cols >= 10);
+        assert!(rows >= 5);
+    }
+
+    #[test]
+    fn test_estimate_pty_size_zero_detail_width() {
+        let (cols, rows) = App::estimate_pty_size(100, 50, 0);
+        // 0% detail width → cols should be minimum (10)
+        assert_eq!(cols, 10);
+        assert!(rows > 5);
+    }
+
+    #[test]
+    fn test_normalize_selection_forward() {
+        let (sy, sx, ey, ex) = normalize_selection((15, 5), (25, 10), 10, 3, 40, 20);
+        // Relative to terminal area: start=(5,2), end=(15,7)
+        assert_eq!(sy, 2);
+        assert_eq!(sx, 5);
+        assert_eq!(ey, 7);
+        assert_eq!(ex, 15);
+    }
+
+    #[test]
+    fn test_normalize_selection_reversed() {
+        // End before start → should normalize to forward order
+        let (sy, sx, ey, ex) = normalize_selection((25, 10), (15, 5), 10, 3, 40, 20);
+        assert_eq!(sy, 2);
+        assert_eq!(sx, 5);
+        assert_eq!(ey, 7);
+        assert_eq!(ex, 15);
+    }
+
+    #[test]
+    fn test_normalize_selection_clamped() {
+        // Coordinates outside terminal area should be clamped
+        let (sy, sx, ey, ex) = normalize_selection((0, 0), (200, 200), 10, 10, 40, 20);
+        assert_eq!(sx, 0);
+        assert_eq!(sy, 0);
+        assert_eq!(ex, 39);
+        assert_eq!(ey, 19);
+    }
+
+    #[test]
+    fn test_normalize_selection_same_line() {
+        let (sy, sx, ey, ex) = normalize_selection((12, 5), (18, 5), 10, 3, 40, 20);
+        assert_eq!(sy, 2);
+        assert_eq!(sx, 2);
+        assert_eq!(ey, 2);
+        assert_eq!(ex, 8);
     }
 }
 

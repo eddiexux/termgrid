@@ -8,6 +8,36 @@ use ratatui::{
     widgets::{Block, Borders, Paragraph},
     Frame,
 };
+/// Check if a screen coordinate falls within a text selection.
+pub fn selection_contains(
+    selection: Option<&TextSelection>,
+    screen_x: u16,
+    screen_y: u16,
+) -> bool {
+    let Some(sel) = selection else {
+        return false;
+    };
+    let (sx, sy) = sel.start;
+    let (ex, ey) = sel.end;
+    let (min_y, max_y) = if sy <= ey { (sy, ey) } else { (ey, sy) };
+    let (min_x_first, max_x_last) = if sy <= ey { (sx, ex) } else { (ex, sx) };
+    if screen_y < min_y || screen_y > max_y {
+        return false;
+    }
+    if screen_y == min_y && screen_y == max_y {
+        let min_x = min_x_first.min(max_x_last);
+        let max_x = min_x_first.max(max_x_last);
+        return screen_x >= min_x && screen_x <= max_x;
+    }
+    if screen_y == min_y {
+        return screen_x >= min_x_first;
+    }
+    if screen_y == max_y {
+        return screen_x <= max_x_last;
+    }
+    true // middle rows fully selected
+}
+
 /// Render result: cursor position + actual terminal area dimensions for PTY sync.
 pub struct DetailRenderResult {
     pub cursor_pos: Option<(u16, u16)>,
@@ -115,31 +145,8 @@ pub fn render(
             screen.visible_rows_with_scroll(rows, cols, scroll_back)
         };
 
-        // Helper: check if a screen-absolute coordinate falls within the selection.
         let is_selected = |screen_x: u16, screen_y: u16| -> bool {
-            if let Some(sel) = selection {
-                let (sx, sy) = sel.start;
-                let (ex, ey) = sel.end;
-                let (min_y, max_y) = if sy <= ey { (sy, ey) } else { (ey, sy) };
-                let (min_x_first, max_x_last) = if sy <= ey { (sx, ex) } else { (ex, sx) };
-                if screen_y < min_y || screen_y > max_y {
-                    return false;
-                }
-                if screen_y == min_y && screen_y == max_y {
-                    let min_x = min_x_first.min(max_x_last);
-                    let max_x = min_x_first.max(max_x_last);
-                    return screen_x >= min_x && screen_x <= max_x;
-                }
-                if screen_y == min_y {
-                    return screen_x >= min_x_first;
-                }
-                if screen_y == max_y {
-                    return screen_x <= max_x_last;
-                }
-                true // middle rows fully selected
-            } else {
-                false
-            }
+            selection_contains(selection, screen_x, screen_y)
         };
 
         let text_lines: Vec<Line> = row_cells
@@ -187,5 +194,81 @@ pub fn render(
     DetailRenderResult {
         cursor_pos,
         terminal_size: (terminal_area.width, terminal_area.height),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::app::SelectionMode;
+
+    fn make_selection(start: (u16, u16), end: (u16, u16)) -> TextSelection {
+        TextSelection {
+            start,
+            end,
+            mode: SelectionMode::Char,
+            anchor_start: start,
+            anchor_end: end,
+        }
+    }
+
+    #[test]
+    fn test_selection_contains_no_selection() {
+        assert!(!selection_contains(None, 5, 5));
+    }
+
+    #[test]
+    fn test_selection_contains_single_line() {
+        let sel = make_selection((2, 5), (8, 5));
+        assert!(!selection_contains(Some(&sel), 1, 5)); // before
+        assert!(selection_contains(Some(&sel), 2, 5)); // start
+        assert!(selection_contains(Some(&sel), 5, 5)); // middle
+        assert!(selection_contains(Some(&sel), 8, 5)); // end
+        assert!(!selection_contains(Some(&sel), 9, 5)); // after
+        assert!(!selection_contains(Some(&sel), 5, 4)); // wrong row
+        assert!(!selection_contains(Some(&sel), 5, 6)); // wrong row
+    }
+
+    #[test]
+    fn test_selection_contains_multi_line() {
+        // Selection from (3, 2) to (7, 4)
+        let sel = make_selection((3, 2), (7, 4));
+        // Row 2: x >= 3 is selected
+        assert!(!selection_contains(Some(&sel), 2, 2));
+        assert!(selection_contains(Some(&sel), 3, 2));
+        assert!(selection_contains(Some(&sel), 50, 2));
+        // Row 3: fully selected (middle row)
+        assert!(selection_contains(Some(&sel), 0, 3));
+        assert!(selection_contains(Some(&sel), 100, 3));
+        // Row 4: x <= 7 is selected
+        assert!(selection_contains(Some(&sel), 0, 4));
+        assert!(selection_contains(Some(&sel), 7, 4));
+        assert!(!selection_contains(Some(&sel), 8, 4));
+        // Outside rows
+        assert!(!selection_contains(Some(&sel), 5, 1));
+        assert!(!selection_contains(Some(&sel), 5, 5));
+    }
+
+    #[test]
+    fn test_selection_contains_reversed() {
+        // Selection dragged upward: end is above start
+        let sel = make_selection((7, 4), (3, 2));
+        // Should work the same as forward selection
+        assert!(selection_contains(Some(&sel), 3, 2));
+        assert!(selection_contains(Some(&sel), 50, 2));
+        assert!(selection_contains(Some(&sel), 5, 3));
+        assert!(selection_contains(Some(&sel), 7, 4));
+        assert!(!selection_contains(Some(&sel), 8, 4));
+    }
+
+    #[test]
+    fn test_selection_contains_single_line_reversed() {
+        // Same line but end < start (dragged left)
+        let sel = make_selection((8, 5), (2, 5));
+        assert!(selection_contains(Some(&sel), 2, 5));
+        assert!(selection_contains(Some(&sel), 5, 5));
+        assert!(selection_contains(Some(&sel), 8, 5));
+        assert!(!selection_contains(Some(&sel), 1, 5));
+        assert!(!selection_contains(Some(&sel), 9, 5));
     }
 }

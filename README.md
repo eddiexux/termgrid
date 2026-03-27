@@ -20,7 +20,9 @@ Manage multiple terminal sessions in a single dashboard. Each tile automatically
 - **Detail panel** — select a tile to see full terminal output with colors
 - **Mouse-driven UI** — all actions via clickable toolbar buttons, no modal switching
 - **Scroll lock** — detail panel stays in place when scrolled back, new output won't reset your position
-- **Session persistence** — auto-save/restore tile layout and scrollback history on restart
+- **tmux backend** — automatic tmux integration when available, sessions survive termgrid restarts
+- **Claude Code awareness** — detects Claude Code tiles, shows unread notification on task completion
+- **Session persistence** — auto-save/restore tile layout on restart; tmux sessions reconnect automatically
 - **Mouse support** — click to select tiles, drag to select text (auto-copy to clipboard)
 - **Full terminal emulation** — powered by [vt100](https://crates.io/crates/vt100), supports complex TUI apps
 - **CJK support** — correct wide character rendering
@@ -128,14 +130,17 @@ cwd_poll_interval = 2        # seconds
 
 ```
 termgrid
-├── App          — event loop + mouse-driven state management
-├── EventLoop    — tokio-driven, multiplexes PTY output + input + timers
-├── TileManager  — tile lifecycle, selection, grid navigation
-│   └── Tile     — PTY process + vt100 terminal emulator + Git context
-├── GitDetector  — CWD change → git2 repo detection (with debounce)
-├── TabBar       — dynamic project grouping from tile Git contexts
-├── Layout       — multi-column grid + detail panel calculation
-└── UI           — ratatui widgets (tile card, detail panel, tab bar, overlays)
+├── App            — event loop + mouse-driven state management
+├── EventLoop      — tokio-driven, multiplexes PTY output + input + timers
+├── TileManager    — tile lifecycle, selection, grid navigation
+│   └── Tile       — PTY backend + vt100 terminal emulator + Git context
+├── PtyBackend     — trait with two implementations:
+│   ├── PtyHandle  — native PTY (portable-pty)
+│   └── TmuxPtyBackend — tmux session with pipe-pane I/O
+├── GitDetector    — CWD change → git2 repo detection (with debounce)
+├── TabBar         — dynamic project grouping from tile Git contexts
+├── Layout         — multi-column grid + detail panel calculation
+└── UI             — ratatui widgets (tile card, detail panel, tab bar, overlays)
 ```
 
 ## Tech Stack
@@ -144,7 +149,7 @@ termgrid
 |-----------|-------|
 | TUI framework | [ratatui](https://ratatui.rs/) + [crossterm](https://crates.io/crates/crossterm) |
 | Terminal emulation | [vt100](https://crates.io/crates/vt100) |
-| PTY management | [portable-pty](https://crates.io/crates/portable-pty) |
+| PTY management | [portable-pty](https://crates.io/crates/portable-pty) + [tmux](https://github.com/tmux/tmux) |
 | Git detection | [git2](https://crates.io/crates/git2) |
 | Async runtime | [tokio](https://tokio.rs/) |
 

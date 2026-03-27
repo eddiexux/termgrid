@@ -66,16 +66,133 @@ pub fn list_termgrid_sessions() -> Vec<(String, PathBuf)> {
     sessions
 }
 
-/// 捕获 tmux pane 的最近 1000 行内容
-pub fn capture_pane(session_name: &str) -> Option<Vec<u8>> {
+/// 检查 tmux pane 是否处于 alternate screen 模式
+pub fn is_alternate_screen(session_name: &str) -> bool {
+    Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            session_name,
+            "-p",
+            "#{alternate_on}",
+        ])
+        .output()
+        .ok()
+        .map(|o| {
+            o.status.success()
+                && String::from_utf8_lossy(&o.stdout).trim() == "1"
+        })
+        .unwrap_or(false)
+}
+
+/// 捕获 tmux pane 的可见内容（含 ANSI 转义序列）+ 光标位置
+///
+/// 只捕获当前可见区域（不含历史滚动），确保输出行数与 pane 高度一致，
+/// 这样光标位置可以直接映射到 VTE 坐标。
+///
+/// 返回 (内容, 光标行, 光标列)。
+pub fn capture_pane(session_name: &str) -> Option<(Vec<u8>, u16, u16)> {
+    // 获取光标位置
+    let cursor_output = Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            session_name,
+            "-p",
+            "#{cursor_x} #{cursor_y}",
+        ])
+        .output()
+        .ok()?;
+    let cursor_str = String::from_utf8_lossy(&cursor_output.stdout);
+    let mut parts = cursor_str.trim().split(' ');
+    let cursor_x: u16 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+    let cursor_y: u16 = parts.next().and_then(|s| s.parse().ok()).unwrap_or(0);
+
+    // 只捕获可见区域（不加 -S，默认捕获当前屏幕）
+    let args = if is_alternate_screen(session_name) {
+        vec!["capture-pane", "-t", session_name, "-a", "-e", "-p"]
+    } else {
+        vec!["capture-pane", "-t", session_name, "-e", "-p"]
+    };
+
+    let output = Command::new("tmux").args(&args).output().ok()?;
+    if output.status.success() {
+        Some((strip_trailing_blank_lines(output.stdout), cursor_y, cursor_x))
+    } else {
+        None
+    }
+}
+
+/// 去除尾部连续的空行（capture-pane 会用空行填满整个 pane 高度）
+///
+/// 保留最后一个换行符但移除多余的空行，避免 VTE 光标停在底部空白区域。
+fn strip_trailing_blank_lines(mut data: Vec<u8>) -> Vec<u8> {
+    while data.ends_with(b"\n\n") {
+        data.pop();
+    }
+    data
+}
+
+/// 获取 tmux pane 中当前前台命令名
+pub fn pane_foreground_command(session_name: &str) -> Option<String> {
     let output = Command::new("tmux")
-        .args(["capture-pane", "-t", session_name, "-p", "-S", "-1000"])
+        .args([
+            "display-message",
+            "-t",
+            session_name,
+            "-p",
+            "#{pane_current_command}",
+        ])
         .output()
         .ok()?;
     if output.status.success() {
-        Some(output.stdout)
+        let cmd = String::from_utf8_lossy(&output.stdout).trim().to_string();
+        if cmd.is_empty() {
+            None
+        } else {
+            Some(cmd)
+        }
     } else {
         None
+    }
+}
+
+/// 获取 tmux pane 中前台进程的 PID
+pub fn pane_foreground_pid(session_name: &str) -> Option<i32> {
+    // #{pane_pid} 是 shell PID，前台进程需通过进程组获取
+    // tmux 没有直接提供前台子进程 PID，先用 pane_pid 的子进程来推断
+    let output = Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            session_name,
+            "-p",
+            "#{pane_pid}",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let shell_pid: i32 = String::from_utf8_lossy(&output.stdout)
+        .trim()
+        .parse()
+        .ok()?;
+
+    // 用 pgrep 获取 shell 的子进程（前台命令）
+    let child_output = Command::new("pgrep")
+        .args(["-P", &shell_pid.to_string()])
+        .output()
+        .ok()?;
+    if child_output.status.success() {
+        // 取第一个子进程 PID
+        String::from_utf8_lossy(&child_output.stdout)
+            .lines()
+            .next()
+            .and_then(|s| s.trim().parse().ok())
+    } else {
+        // 没有子进程，前台就是 shell 本身
+        Some(shell_pid)
     }
 }
 
@@ -108,6 +225,43 @@ pub fn next_session_id() -> u64 {
         }
     }
     next
+}
+
+/// 获取 tmux pane 的当前尺寸
+pub fn pane_size(session_name: &str) -> Option<(u16, u16)> {
+    let output = Command::new("tmux")
+        .args([
+            "display-message",
+            "-t",
+            session_name,
+            "-p",
+            "#{pane_width} #{pane_height}",
+        ])
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let s = String::from_utf8_lossy(&output.stdout);
+    let mut parts = s.trim().split(' ');
+    let w: u16 = parts.next()?.parse().ok()?;
+    let h: u16 = parts.next()?.parse().ok()?;
+    Some((w, h))
+}
+
+/// Resize tmux pane（触发程序重绘）
+pub fn resize_pane(session_name: &str, cols: u16, rows: u16) {
+    let _ = Command::new("tmux")
+        .args([
+            "resize-window",
+            "-t",
+            session_name,
+            "-x",
+            &cols.to_string(),
+            "-y",
+            &rows.to_string(),
+        ])
+        .status();
 }
 
 /// Kill tmux session 并清理 FIFO
@@ -514,7 +668,10 @@ impl TmuxPtyBackend {
         Ok((backend, reader))
     }
 
-    /// 重连已有 tmux session
+    /// 重连已有 tmux session（仅建立 pipe-pane，不 resize）
+    ///
+    /// resize 由调用方在 restore scrollback 之后单独执行，
+    /// 避免 capture_pane 内容与 resize 触发的重绘输出叠加。
     pub fn reconnect(session_name: &str) -> Result<(Self, TmuxReader)> {
         // 先关闭旧的 pipe-pane
         let _ = Command::new("tmux")
@@ -540,7 +697,7 @@ impl TmuxPtyBackend {
             );
         }
 
-        // 重新挂 pipe-pane
+        // 挂 pipe-pane
         let pipe_cmd = format!("cat > '{}'", pipe.display());
         let status = Command::new("tmux")
             .args(["pipe-pane", "-t", session_name, "-O", &pipe_cmd])
@@ -1086,5 +1243,85 @@ mod tests {
         }
         assert_eq!(control_char_to_tmux_key(0x7f), Some("BSpace".to_string()));
         assert_eq!(control_char_to_tmux_key(0x00), None);
+    }
+
+    // -----------------------------------------------------------------------
+    // strip_trailing_blank_lines 测试
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_strip_trailing_no_blanks() {
+        let data = b"hello\nworld\n".to_vec();
+        let result = strip_trailing_blank_lines(data);
+        assert_eq!(result, b"hello\nworld\n");
+    }
+
+    #[test]
+    fn test_strip_trailing_one_blank() {
+        // 两个连续换行 = 一个空行，应移除一个
+        let data = b"hello\n\n".to_vec();
+        let result = strip_trailing_blank_lines(data);
+        assert_eq!(result, b"hello\n");
+    }
+
+    #[test]
+    fn test_strip_trailing_many_blanks() {
+        // 多个尾部空行全部移除到只剩一个换行
+        let data = b"hello\n\n\n\n\n".to_vec();
+        let result = strip_trailing_blank_lines(data);
+        assert_eq!(result, b"hello\n");
+    }
+
+    #[test]
+    fn test_strip_trailing_empty_input() {
+        let data = b"".to_vec();
+        let result = strip_trailing_blank_lines(data);
+        assert!(result.is_empty());
+    }
+
+    #[test]
+    fn test_strip_trailing_only_newlines() {
+        let data = b"\n\n\n".to_vec();
+        let result = strip_trailing_blank_lines(data);
+        assert_eq!(result, b"\n");
+    }
+
+    #[test]
+    fn test_strip_trailing_preserves_internal_blanks() {
+        // 中间的空行不应被移除
+        let data = b"hello\n\nworld\n\n".to_vec();
+        let result = strip_trailing_blank_lines(data);
+        assert_eq!(result, b"hello\n\nworld\n");
+    }
+
+    // -----------------------------------------------------------------------
+    // is_alternate_screen / pane commands（需要 tmux）
+    // -----------------------------------------------------------------------
+
+    #[test]
+    fn test_is_alternate_screen_nonexistent_session() {
+        // 不存在的 session 应返回 false，不 panic
+        assert!(!is_alternate_screen("tg_nonexistent_test_99999"));
+    }
+
+    #[test]
+    fn test_pane_foreground_command_nonexistent_session() {
+        assert!(pane_foreground_command("tg_nonexistent_test_99999").is_none());
+    }
+
+    #[test]
+    fn test_pane_foreground_pid_nonexistent_session() {
+        assert!(pane_foreground_pid("tg_nonexistent_test_99999").is_none());
+    }
+
+    #[test]
+    fn test_capture_pane_nonexistent_session() {
+        assert!(capture_pane("tg_nonexistent_test_99999").is_none());
+    }
+
+    #[test]
+    fn test_kill_session_nonexistent_no_panic() {
+        // kill 不存在的 session 不应 panic
+        kill_session("tg_nonexistent_test_99999");
     }
 }
