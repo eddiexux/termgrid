@@ -33,6 +33,8 @@ pub struct Tile {
     pub burst_bytes: usize,
     /// Name of the current foreground process (e.g. "claude", "node", "cargo").
     pub fg_process_name: Option<String>,
+    /// tmux session name (e.g. "tg0"). None for native PTY backend.
+    pub session_name: Option<String>,
     /// Ring buffer of raw PTY output for full history persistence.
     output_history: VecDeque<u8>,
     /// Maximum bytes to keep in output history (10 MB per tile).
@@ -75,6 +77,85 @@ impl Tile {
             has_unread: false,
             burst_bytes: 0,
             fg_process_name: None,
+            session_name: None,
+            output_history: VecDeque::new(),
+            max_history_bytes: 10 * 1024 * 1024,
+            scrollback_cache: None,
+        };
+
+        Ok((tile, reader))
+    }
+
+    /// Create a tile backed by a tmux session.
+    pub fn spawn_tmux(
+        id: TileId,
+        cwd: &Path,
+        cols: u16,
+        rows: u16,
+    ) -> anyhow::Result<(Self, crate::tmux::TmuxReader, String)> {
+        let session_id = crate::tmux::next_session_id();
+        let session_name = format!("{}{}", crate::tmux::SESSION_PREFIX, session_id);
+        let (backend, reader) =
+            crate::tmux::TmuxPtyBackend::spawn(&session_name, cwd, cols, rows)?;
+        tracing::info!(
+            "Tile {} spawned tmux session '{}'",
+            id.0,
+            session_name
+        );
+        let vte = VteState::new(cols, rows);
+        let git_context = detect_git(cwd);
+
+        let tile = Tile {
+            id,
+            vte,
+            pty: Box::new(backend),
+            git_context,
+            cwd: cwd.to_path_buf(),
+            status: TileStatus::Running,
+            last_active: Instant::now(),
+            waiting_since: None,
+            has_unread: false,
+            burst_bytes: 0,
+            fg_process_name: None,
+            session_name: Some(session_name.clone()),
+            output_history: VecDeque::new(),
+            max_history_bytes: 10 * 1024 * 1024,
+            scrollback_cache: None,
+        };
+
+        Ok((tile, reader, session_name))
+    }
+
+    /// Reconnect to an existing tmux session.
+    pub fn reconnect_tmux(
+        id: TileId,
+        session_name: &str,
+        cwd: &Path,
+        cols: u16,
+        rows: u16,
+    ) -> anyhow::Result<(Self, crate::tmux::TmuxReader)> {
+        let (backend, reader) = crate::tmux::TmuxPtyBackend::reconnect(session_name)?;
+        tracing::info!(
+            "Tile {} reconnected to tmux session '{}'",
+            id.0,
+            session_name
+        );
+        let vte = VteState::new(cols, rows);
+        let git_context = detect_git(cwd);
+
+        let tile = Tile {
+            id,
+            vte,
+            pty: Box::new(backend),
+            git_context,
+            cwd: cwd.to_path_buf(),
+            status: TileStatus::Running,
+            last_active: Instant::now(),
+            waiting_since: None,
+            has_unread: false,
+            burst_bytes: 0,
+            fg_process_name: None,
+            session_name: Some(session_name.to_string()),
             output_history: VecDeque::new(),
             max_history_bytes: 10 * 1024 * 1024,
             scrollback_cache: None,

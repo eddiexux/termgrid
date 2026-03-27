@@ -56,6 +56,11 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
 
+    if termgrid::tmux::is_inside_tmux() {
+        eprintln!("Error: termgrid cannot run inside tmux. Please exit tmux first.");
+        std::process::exit(1);
+    }
+
     if let Some(shell) = cli.completions {
         let mut cmd = Cli::command();
         generate(shell, &mut cmd, "termgrid", &mut std::io::stdout());
@@ -70,97 +75,139 @@ async fn main() -> anyhow::Result<()> {
             app.spawn_tile(&path)?;
         }
     } else if !cli.fresh {
-        // Auto-restore last session with scrollback
-        if let Some(session) = Session::load(&Session::session_path()) {
-            for tile_session in &session.tiles {
-                if tile_session.cwd.exists() {
-                    if let Ok(id) = app.spawn_tile(&tile_session.cwd) {
-                        // Restore scrollback into the tile's VTE
-                        if let Some(idx) = tile_session.scrollback_index {
-                            if let Some(scrollback_data) = Session::load_scrollback(idx) {
-                                app.restore_tile_scrollback(id, &scrollback_data);
+        if app.backend() == termgrid::app::PtyBackendKind::Tmux {
+            // Tmux backend: reconnect to existing termgrid sessions
+            let sessions = termgrid::tmux::list_termgrid_sessions();
+            if !sessions.is_empty() {
+                let saved = Session::load(&Session::session_path());
+                let columns = saved.as_ref().map(|s| s.columns).unwrap_or(2);
+                for (name, cwd) in &sessions {
+                    if cwd.exists() {
+                        if let Ok(id) = app.reconnect_tile(name, cwd) {
+                            if let Some(captured) = termgrid::tmux::capture_pane(name) {
+                                app.restore_tile_scrollback(id, &captured);
                             }
                         }
                     }
                 }
+                app.set_columns(columns);
             }
-            app.set_columns(session.columns);
+        } else {
+            // Native backend: restore from sessions.json + scrollback
+            if let Some(session) = Session::load(&Session::session_path()) {
+                for tile_session in &session.tiles {
+                    if tile_session.cwd.exists() {
+                        if let Ok(id) = app.spawn_tile(&tile_session.cwd) {
+                            // Restore scrollback into the tile's VTE
+                            if let Some(idx) = tile_session.scrollback_index {
+                                if let Some(scrollback_data) = Session::load_scrollback(idx) {
+                                    app.restore_tile_scrollback(id, &scrollback_data);
+                                }
+                            }
+                        }
+                    }
+                }
+                app.set_columns(session.columns);
+            }
         }
     }
 
     app.run().await?;
 
-    // Graceful shutdown: send Ctrl+C twice to Claude Code tiles so they exit
-    // and print their session resume command. The output lands in output_history
-    // and gets saved with scrollback, so it's visible on next restore.
-    {
+    if app.backend() == termgrid::app::PtyBackendKind::Tmux {
+        // Tmux backend: save layout + session mapping only, don't kill sessions
         let tiles = app.tile_manager_ref().tiles();
-        let cc_tile_ids: Vec<_> = tiles
+        let tile_sessions: Vec<termgrid::session::TileSession> = tiles
             .iter()
-            .filter(|t| t.is_claude_code())
-            .map(|t| t.id)
+            .map(|t| termgrid::session::TileSession {
+                cwd: t.cwd.clone(),
+                scrollback_index: None,
+                tmux_session: t.session_name.clone(),
+            })
             .collect();
 
-        if !cc_tile_ids.is_empty() {
-            tracing::info!(
-                "Sending Ctrl+C x2 to {} Claude Code tile(s)",
-                cc_tile_ids.len()
-            );
-            // First Ctrl+C: cancel current task
-            for &id in &cc_tile_ids {
-                if let Some(tile) = app.tile_manager_ref().get(id) {
-                    tile.pty.signal_interrupt();
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+        let session = Session {
+            tiles: tile_sessions,
+            columns: app.columns(),
+            active_tab: "ALL".into(),
+        };
+        session.save(&Session::session_path())?;
+        termgrid::tmux::cleanup_fifos();
+    } else {
+        // Native backend: graceful shutdown + save scrollback
 
-            // Second Ctrl+C: exit Claude Code
-            for &id in &cc_tile_ids {
-                if let Some(tile) = app.tile_manager_ref().get(id) {
-                    tile.pty.signal_interrupt();
-                }
-            }
-            tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+        // Send Ctrl+C twice to Claude Code tiles so they exit
+        // and print their session resume command.
+        {
+            let tiles = app.tile_manager_ref().tiles();
+            let cc_tile_ids: Vec<_> = tiles
+                .iter()
+                .filter(|t| t.is_claude_code())
+                .map(|t| t.id)
+                .collect();
 
-            // Drain pending PTY output into tiles
-            while let Ok(event) = app.try_recv_event() {
-                if let termgrid::event::AppEvent::PtyOutput(tile_id, data) = event {
-                    if let Some(tile) = app.tile_manager_mut().get_mut(tile_id) {
-                        tile.process_output(&data);
+            if !cc_tile_ids.is_empty() {
+                tracing::info!(
+                    "Sending Ctrl+C x2 to {} Claude Code tile(s)",
+                    cc_tile_ids.len()
+                );
+                // First Ctrl+C: cancel current task
+                for &id in &cc_tile_ids {
+                    if let Some(tile) = app.tile_manager_ref().get(id) {
+                        tile.pty.signal_interrupt();
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+                // Second Ctrl+C: exit Claude Code
+                for &id in &cc_tile_ids {
+                    if let Some(tile) = app.tile_manager_ref().get(id) {
+                        tile.pty.signal_interrupt();
+                    }
+                }
+                tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+
+                // Drain pending PTY output into tiles
+                while let Ok(event) = app.try_recv_event() {
+                    if let termgrid::event::AppEvent::PtyOutput(tile_id, data) = event {
+                        if let Some(tile) = app.tile_manager_mut().get_mut(tile_id) {
+                            tile.process_output(&data);
+                        }
                     }
                 }
             }
         }
+
+        // Save session with scrollback
+        Session::clean_scrollback();
+        let tiles = app.tile_manager_ref().tiles();
+        let tile_sessions: Vec<termgrid::session::TileSession> = tiles
+            .iter()
+            .enumerate()
+            .map(|(i, t)| {
+                let scrollback_data = t.output_history();
+                let scrollback_index = if !scrollback_data.is_empty() {
+                    let _ = Session::save_scrollback(i, &scrollback_data);
+                    Some(i)
+                } else {
+                    None
+                };
+
+                termgrid::session::TileSession {
+                    cwd: t.cwd.clone(),
+                    scrollback_index,
+                    tmux_session: None,
+                }
+            })
+            .collect();
+
+        let session = Session {
+            tiles: tile_sessions,
+            columns: app.columns(),
+            active_tab: "ALL".into(),
+        };
+        session.save(&Session::session_path())?;
     }
-
-    // Save session with scrollback
-    Session::clean_scrollback();
-    let tiles = app.tile_manager_ref().tiles();
-    let tile_sessions: Vec<termgrid::session::TileSession> = tiles
-        .iter()
-        .enumerate()
-        .map(|(i, t)| {
-            let scrollback_data = t.output_history();
-            let scrollback_index = if !scrollback_data.is_empty() {
-                let _ = Session::save_scrollback(i, &scrollback_data);
-                Some(i)
-            } else {
-                None
-            };
-
-            termgrid::session::TileSession {
-                cwd: t.cwd.clone(),
-                scrollback_index,
-            }
-        })
-        .collect();
-
-    let session = Session {
-        tiles: tile_sessions,
-        columns: app.columns(),
-        active_tab: "ALL".into(),
-    };
-    session.save(&Session::session_path())?;
 
     Ok(())
 }

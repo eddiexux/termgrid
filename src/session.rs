@@ -14,6 +14,9 @@ pub struct TileSession {
     /// Index into scrollback files (scrollback_0.bin, scrollback_1.bin, ...).
     /// None if no scrollback was saved.
     pub scrollback_index: Option<usize>,
+    /// tmux session name (e.g. "tg0"). None for native PTY sessions.
+    #[serde(default)]
+    pub tmux_session: Option<String>,
 }
 
 impl Session {
@@ -93,10 +96,12 @@ mod tests {
                 TileSession {
                     cwd: PathBuf::from("/tmp"),
                     scrollback_index: None,
+                    tmux_session: None,
                 },
                 TileSession {
                     cwd: PathBuf::from("/home/user"),
                     scrollback_index: Some(0),
+                    tmux_session: None,
                 },
             ],
             columns: 2,
@@ -181,6 +186,44 @@ mod tests {
 
         session.save(&path).unwrap();
         assert!(path.exists());
+    }
+
+    #[test]
+    fn test_load_old_format_without_tmux_session() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("old_format.json");
+        // Old format without tmux_session field — should load fine via #[serde(default)]
+        let json = r#"{
+            "tiles": [{"cwd": "/tmp", "scrollback_index": 0}],
+            "columns": 2,
+            "active_tab": "ALL"
+        }"#;
+        std::fs::write(&path, json).unwrap();
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.tiles.len(), 1);
+        assert!(loaded.tiles[0].tmux_session.is_none());
+        assert_eq!(loaded.tiles[0].scrollback_index, Some(0));
+    }
+
+    #[test]
+    fn test_save_and_load_with_tmux_session() {
+        let dir = tempdir().unwrap();
+        let path = dir.path().join("tmux.json");
+
+        let session = Session {
+            tiles: vec![TileSession {
+                cwd: PathBuf::from("/workspace"),
+                scrollback_index: None,
+                tmux_session: Some("tg0".into()),
+            }],
+            columns: 2,
+            active_tab: "ALL".into(),
+        };
+
+        session.save(&path).unwrap();
+        let loaded = Session::load(&path).unwrap();
+        assert_eq!(loaded.tiles[0].tmux_session.as_deref(), Some("tg0"));
+        assert!(loaded.tiles[0].scrollback_index.is_none());
     }
 
     #[test]

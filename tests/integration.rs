@@ -99,10 +99,12 @@ fn test_session_round_trip() {
             TileSession {
                 cwd: PathBuf::from("/tmp/a"),
                 scrollback_index: None,
+                tmux_session: None,
             },
             TileSession {
                 cwd: PathBuf::from("/tmp/b"),
                 scrollback_index: None,
+                tmux_session: None,
             },
         ],
         columns: 3,
