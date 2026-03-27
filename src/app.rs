@@ -46,6 +46,19 @@ use ratatui::Terminal;
 use std::time::Duration;
 use tokio::sync::mpsc;
 
+/// Minimum accumulated bytes to consider a tile's output as a meaningful burst.
+/// Must exceed Claude Code's periodic status updates (~1.2KB) to avoid false positives.
+pub const UNREAD_BURST_THRESHOLD: usize = 4000;
+
+/// How long a tile must be silent after a burst before marking as unread.
+pub const UNREAD_SILENCE_DURATION: Duration = Duration::from_secs(5);
+
+/// Tick interval for polling tile states (ms).
+pub const TICK_INTERVAL_MS: u64 = 500;
+
+/// Maximum time between clicks to count as double/triple click (ms).
+pub const MULTI_CLICK_INTERVAL_MS: u64 = 400;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum AppMode {
     Normal,
@@ -201,7 +214,7 @@ impl App {
         // Spawn tick timer
         let tx_tick = self.event_tx.clone();
         self.spawned_tasks.push(tokio::spawn(async move {
-            let mut interval = tokio::time::interval(Duration::from_millis(500));
+            let mut interval = tokio::time::interval(Duration::from_millis(TICK_INTERVAL_MS));
             loop {
                 interval.tick().await;
                 if tx_tick.send(AppEvent::Tick).await.is_err() {
@@ -401,7 +414,7 @@ impl App {
             MouseEventKind::Down(MouseButton::Left) => {
                 let now = std::time::Instant::now();
                 let is_multi = self.last_click_time.map_or(false, |t| {
-                    now.duration_since(t) < Duration::from_millis(400)
+                    now.duration_since(t) < Duration::from_millis(MULTI_CLICK_INTERVAL_MS)
                 }) && self.last_click_pos.map_or(false, |(px, py)| {
                     x.abs_diff(px) <= 2 && y.abs_diff(py) <= 2
                 });
@@ -1026,8 +1039,8 @@ impl App {
             if tile.has_unread {
                 continue; // already marked, wait for user to click
             }
-            if tile.burst_bytes >= 500
-                && tile.last_active.elapsed() >= Duration::from_secs(5)
+            if tile.burst_bytes >= UNREAD_BURST_THRESHOLD
+                && tile.last_active.elapsed() >= UNREAD_SILENCE_DURATION
             {
                 tracing::info!(
                     "Tile {} unread triggered: burst_bytes={}, last_active_ago={:?}",

@@ -123,7 +123,7 @@ fn test_session_round_trip() {
 //
 // These tests simulate the detection logic from App::poll_tile_states without
 // requiring the full async App. The detection condition is:
-//   tile.burst_bytes >= 500 AND tile.last_active.elapsed() >= 5s AND !tile.has_unread
+//   tile.burst_bytes >= UNREAD_BURST_THRESHOLD AND last_active.elapsed() >= UNREAD_SILENCE_DURATION AND !tile.has_unread
 //
 // burst_bytes is only incremented for non-selected tiles (by app.rs PtyOutput handler).
 
@@ -153,6 +153,7 @@ fn test_claude_code_detection_live() {
 
 mod burst_detection {
     use super::*;
+    use termgrid::app::{UNREAD_BURST_THRESHOLD, UNREAD_SILENCE_DURATION};
     use termgrid::tab::TabFilter;
     use termgrid::tile::{Tile, TileId};
     use termgrid::tile_manager::TileManager;
@@ -171,8 +172,8 @@ mod burst_detection {
             if tile.has_unread {
                 continue;
             }
-            if tile.burst_bytes >= 500
-                && tile.last_active.elapsed() >= Duration::from_secs(5)
+            if tile.burst_bytes >= UNREAD_BURST_THRESHOLD
+                && tile.last_active.elapsed() >= UNREAD_SILENCE_DURATION
             {
                 tile.has_unread = true;
                 tile.burst_bytes = 0;
@@ -187,8 +188,8 @@ mod burst_detection {
 
         // Simulate non-selected tile receiving a burst
         let tile = mgr.get_mut(id).unwrap();
-        tile.process_output(&vec![b'X'; 600]);
-        tile.burst_bytes = 600; // app.rs would do this for non-selected
+        tile.process_output(&vec![b'X'; 5000]);
+        tile.burst_bytes = 5000; // app.rs would do this for non-selected
         // Simulate 6 seconds of silence
         tile.last_active = Instant::now() - Duration::from_secs(6);
 
@@ -221,14 +222,14 @@ mod burst_detection {
         let id = make_tile(&mut mgr);
 
         let tile = mgr.get_mut(id).unwrap();
-        tile.burst_bytes = 1000;
+        tile.burst_bytes = 5000;
         tile.last_active = Instant::now(); // just now — still outputting
 
         mgr.deselect();
         run_detection(&mut mgr, None);
 
         assert!(!mgr.get(id).unwrap().has_unread);
-        assert_eq!(mgr.get(id).unwrap().burst_bytes, 1000); // not reset
+        assert_eq!(mgr.get(id).unwrap().burst_bytes, 5000); // not reset
     }
 
     #[test]
@@ -238,7 +239,7 @@ mod burst_detection {
 
         mgr.select(id);
         // select resets burst_bytes, so set after select
-        mgr.get_mut(id).unwrap().burst_bytes = 2000;
+        mgr.get_mut(id).unwrap().burst_bytes = 5000;
         mgr.get_mut(id).unwrap().last_active = Instant::now() - Duration::from_secs(10);
 
         run_detection(&mut mgr, Some(id));
@@ -272,7 +273,7 @@ mod burst_detection {
 
         // First cycle: trigger unread
         let tile = mgr.get_mut(id).unwrap();
-        tile.burst_bytes = 1000;
+        tile.burst_bytes = 5000;
         tile.last_active = Instant::now() - Duration::from_secs(6);
         mgr.deselect();
         run_detection(&mut mgr, None);
@@ -298,7 +299,7 @@ mod burst_detection {
 
         // Tile A: big burst, long silence → should trigger
         let tile_a = mgr.get_mut(id_a).unwrap();
-        tile_a.burst_bytes = 800;
+        tile_a.burst_bytes = UNREAD_BURST_THRESHOLD + 1000;
         tile_a.last_active = Instant::now() - Duration::from_secs(7);
 
         // Tile B: small burst → should not trigger
@@ -346,12 +347,12 @@ mod burst_detection {
 
         // Simulate many small outputs (like Claude Code streaming)
         let tile = mgr.get_mut(id).unwrap();
-        for _ in 0..100 {
+        for _ in 0..1000 {
             tile.process_output(b"token ");
             tile.burst_bytes += 6;
         }
-        // Total: 600 bytes
-        assert_eq!(tile.burst_bytes, 600);
+        // Total: 6000 bytes (above UNREAD_BURST_THRESHOLD)
+        assert_eq!(tile.burst_bytes, 6000);
 
         // Still recent — no trigger
         run_detection(&mut mgr, None);
