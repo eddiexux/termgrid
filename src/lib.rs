@@ -12,4 +12,5 @@ pub mod session;
 pub mod tab;
 pub mod tile;
 pub mod tile_manager;
+pub mod tmux;
 pub mod ui;
