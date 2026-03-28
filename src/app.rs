@@ -48,7 +48,8 @@ use tokio::sync::mpsc;
 
 /// Minimum visible (non-escape-sequence) bytes to consider a tile's output as a meaningful burst.
 /// Only printable characters count; terminal control sequences are excluded.
-pub const UNREAD_BURST_THRESHOLD: usize = 200;
+/// Claude Code status bar refreshes produce ~200-800 visible bytes; real work output is typically 1000+.
+pub const UNREAD_BURST_THRESHOLD: usize = 1000;
 
 /// How long a tile must be silent after a burst before marking as unread.
 pub const UNREAD_SILENCE_DURATION: Duration = Duration::from_secs(5);
