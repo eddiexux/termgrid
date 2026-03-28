@@ -35,6 +35,8 @@ pub struct Tile {
     pub fg_process_name: Option<String>,
     /// tmux session name (e.g. "tg0"). None for native PTY backend.
     pub session_name: Option<String>,
+    /// Last PtyOutput sample with visible bytes (for heartbeat diagnosis). TODO: remove
+    pub last_output_sample: Option<Vec<u8>>,
     /// Ring buffer of raw PTY output for full history persistence.
     output_history: VecDeque<u8>,
     /// Maximum bytes to keep in output history (10 MB per tile).
@@ -76,6 +78,7 @@ impl Tile {
             waiting_since: None,
             has_unread: false,
             burst_bytes: 0,
+            last_output_sample: None,
             fg_process_name: None,
             session_name: None,
             output_history: VecDeque::new(),
@@ -116,6 +119,7 @@ impl Tile {
             waiting_since: None,
             has_unread: false,
             burst_bytes: 0,
+            last_output_sample: None,
             fg_process_name: None,
             session_name: Some(session_name.clone()),
             output_history: VecDeque::new(),
@@ -154,6 +158,7 @@ impl Tile {
             waiting_since: None,
             has_unread: false,
             burst_bytes: 0,
+            last_output_sample: None,
             fg_process_name: None,
             session_name: Some(session_name.to_string()),
             output_history: VecDeque::new(),
@@ -314,6 +319,7 @@ impl Tile {
             waiting_since: None,
             has_unread: false,
             burst_bytes: 0,
+            last_output_sample: None,
             fg_process_name: None,
             session_name: None,
             output_history: VecDeque::new(),

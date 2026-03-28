@@ -368,8 +368,14 @@ impl App {
             AppEvent::Crossterm(_) => {}
             AppEvent::PtyOutput(tile_id, data) => {
                 if let Some(tile) = self.tile_manager.get_mut(tile_id) {
+                    let visible = count_visible_bytes(&data);
+                    // Capture last output sample for diagnosis when burst triggers
+                    // TODO: remove after heartbeat diagnosis
+                    if tile.is_claude_code() && visible > 0 {
+                        tile.last_output_sample = Some(data.clone());
+                    }
                     tile.process_output(&data);
-                    tile.burst_bytes += count_visible_bytes(&data);
+                    tile.burst_bytes += visible;
                 } else {
                     tracing::debug!("PtyOutput for unknown tile {:?}", tile_id);
                 }
@@ -1043,11 +1049,22 @@ impl App {
             if tile.burst_bytes >= UNREAD_BURST_THRESHOLD
                 && tile.last_active.elapsed() >= UNREAD_SILENCE_DURATION
             {
+                // Dump last output sample to diagnose heartbeat vs real output
+                let sample_str = tile.last_output_sample.as_ref().map(|s| {
+                    let escaped: String = s.iter().map(|&b| {
+                        if b == 0x1b { "<ESC>".to_string() }
+                        else if b < 0x20 { format!("<{:02X}>", b) }
+                        else if b < 0x7f { (b as char).to_string() }
+                        else { format!("<{:02X}>", b) }
+                    }).collect();
+                    if escaped.len() > 1000 { escaped[..1000].to_string() } else { escaped }
+                }).unwrap_or_default();
                 tracing::info!(
-                    "Tile {} unread triggered: burst_bytes={}, last_active_ago={:?}",
+                    "Tile {} unread triggered: burst_bytes={}, last_active_ago={:?}, last_sample={}",
                     tile.id.0,
                     tile.burst_bytes,
                     tile.last_active.elapsed(),
+                    sample_str,
                 );
                 tile.has_unread = true;
                 tile.burst_bytes = 0;
